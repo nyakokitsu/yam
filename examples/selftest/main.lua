@@ -1,20 +1,21 @@
--- Self test for Station Lite 2 (plum).
+-- Самотест для Яндекс Станции Лайт 2 (plum).
 --
--- Runs a fixed sequence so a human can watch the hardware and confirm each
--- step. Every step holds long enough to be seen.
+-- Показывает по шагам кольцо и все 36 сегментов экрана, задерживая каждое
+-- состояние настолько, чтобы его можно было проверить глазами.
 --
--- Notes about this platform:
---   * ring = 3 zones, each RGB: plum:{red,green,blue}:ring1..3
---   * clock = 36 segments: A..H x positions 0..3, plus DEGREE, DH, DM, DL
---   * alice.clock.segments() writes the whole frame: any segment not listed is
---     cleared, so every frame below is built in full.
---   * DH + DL are the colon; DM is the separate middle segment (the bar).
---   * The sandbox exposes only table/string/math/utf8, so `print` does not
---     exist and must not be called.
+-- Особенности платформы:
+--   * кольцо — 3 зоны по RGB: plum:{red,green,blue}:ring1..3
+--   * экран — 36 сегментов: A..H на позициях 0..3, плюс DEGREE, DH, DM, DL
+--   * alice.clock.segments() перезаписывает кадр целиком: всё, что не
+--     перечислено, гасится. Поэтому каждый кадр собирается полностью.
+--   * DH и DL — двоеточие; DM — отдельный средний сегмент для полоски,
+--     в двоеточие не входит.
+--   * в песочнице доступны только table/string/math/utf8, поэтому print()
+--     не используется.
 
-local HOLD = 1500 -- ms per visible step
+local HOLD = 1500 -- мс на один видимый шаг
 
--- Digit font, same table the stock firmware uses.
+-- Шрифт цифр, как в штатной прошивке.
 local FONT = {
   ["0"] = {"A", "B", "C", "D", "E", "F"},
   ["1"] = {"B", "C"},
@@ -30,7 +31,7 @@ local FONT = {
   [" "] = {},
 }
 
--- ring_colour fills all zones with one colour.
+-- ring_colour заливает все зоны одним цветом.
 local function ring_colour(hex)
   local frame = {}
   for i = 1, device.led_count do
@@ -39,8 +40,9 @@ local function ring_colour(hex)
   alice.set(frame)
 end
 
--- clock_frame renders four characters plus colon and bar level.
-local function clock_frame(text, brightness, bar)
+-- clock_frame рисует четыре символа, двоеточие и уровень полоски.
+-- Позиции нумеруются с 0, как в sysfs.
+local function clock_frame(text, brightness, bar, colon)
   local frame = {}
   for pos = 0, 3 do
     local char = string.sub(text, pos + 1, pos + 1)
@@ -49,13 +51,15 @@ local function clock_frame(text, brightness, bar)
       frame[part .. pos] = brightness
     end
   end
-  frame.DH = brightness
-  frame.DL = brightness
+  local mark = 0
+  if colon then mark = brightness end
+  frame.DH = mark
+  frame.DL = mark
   frame.DM = bar or 0
   return frame
 end
 
--- 1. Ring: each primary colour in turn -------------------------------------
+-- 1. Кольцо: основные цвета ------------------------------------------------
 ring_colour("#FF0000")
 alice.sleep(HOLD)
 ring_colour("#00FF00")
@@ -65,7 +69,7 @@ alice.sleep(HOLD)
 ring_colour("#FFFFFF")
 alice.sleep(HOLD)
 
--- 2. Ring: each zone separately, so a dead zone is obvious -----------------
+-- 2. Кольцо: каждая зона отдельно — сразу видно мёртвую зону ----------------
 for zone = 1, device.led_count do
   local frame = {}
   for i = 1, device.led_count do
@@ -75,7 +79,7 @@ for zone = 1, device.led_count do
   alice.sleep(700)
 end
 
--- 3. Ring: sweep, to confirm all zones animate smoothly --------------------
+-- 3. Кольцо: бегущий огонь --------------------------------------------------
 for _ = 1, 3 do
   for hot = 1, device.led_count do
     local frame = {}
@@ -89,7 +93,7 @@ for _ = 1, 3 do
   end
 end
 
--- 4. Clock: every segment at once, then all off ----------------------------
+-- 4. Экран: все сегменты разом, потом гашение ------------------------------
 local all = {}
 for pos = 0, 3 do
   for _, part in ipairs({"A", "B", "C", "D", "E", "F", "G", "H"}) do
@@ -106,38 +110,43 @@ alice.sleep(2500)
 alice.clock.segments({})
 alice.sleep(700)
 
--- 5. Clock: digit table, to check every glyph ------------------------------
-for _, text in ipairs({"0123", "4567", "89--"}) do
-  alice.clock.segments(clock_frame(text, 200, 0))
-  alice.sleep(1800)
+-- 5. Экран: каждый глиф во всех четырёх позициях.
+-- Двоеточие выключено, чтобы "4567" не выглядело как битое время.
+for digit = 0, 9 do
+  local text = string.rep(tostring(digit), 4)
+  alice.clock.segments(clock_frame(text, 200, 0, false))
+  alice.sleep(900)
 end
 
--- 6. Clock: colon off, then on. DM must stay dark here ---------------------
-local no_colon = clock_frame("1234", 200, 0)
-no_colon.DH = 0
-no_colon.DL = 0
-alice.clock.segments(no_colon)
+-- 6. Экран: где именно двоеточие.
+-- "1111" без двоеточия и с ним: разница видна только между второй и третьей
+-- цифрой, если DH/DL стоят на своём месте.
+alice.clock.segments(clock_frame("1111", 200, 0, false))
+alice.sleep(1800)
+alice.clock.segments(clock_frame("1111", 200, 0, true))
+alice.sleep(1800)
+
+-- 7. Экран: нормальное время -----------------------------------------------
+alice.clock.segments(clock_frame("1234", 200, 0, true))
 alice.sleep(HOLD)
 
-alice.clock.segments(clock_frame("1234", 200, 0))
-alice.sleep(HOLD)
-
--- 7. Clock: the middle segment sweeps while 12:34 stays visible ------------
+-- 8. Экран: полоска на DM при видимом времени ------------------------------
+-- DM меняется, DH/DL остаются ровно на месте.
 for level = 0, 255, 17 do
-  alice.clock.segments(clock_frame("1234", 170, level))
+  alice.clock.segments(clock_frame("1234", 170, level, true))
   alice.sleep(70)
 end
 for level = 255, 0, -17 do
-  alice.clock.segments(clock_frame("1234", 170, level))
+  alice.clock.segments(clock_frame("1234", 170, level, true))
   alice.sleep(70)
 end
 
--- 8. Clock: degree marker on its own --------------------------------------
-local with_degree = clock_frame("1234", 170, 0)
-with_degree.DEGREE = 255
-alice.clock.segments(with_degree)
+-- 9. Экран: маркер градуса отдельно ----------------------------------------
+local degree = clock_frame("1234", 170, 0, true)
+degree.DEGREE = 255
+alice.clock.segments(degree)
 alice.sleep(HOLD)
 
--- 9. Restore ---------------------------------------------------------------
+-- 10. Возврат ---------------------------------------------------------------
 alice.clock.off()
 alice.off()
