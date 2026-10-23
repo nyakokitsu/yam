@@ -1,0 +1,10 @@
+id = "selftest"
+name = "Self test"
+version = "1.0.0"
+entry = "main.lua"
+description = "Steps through ring colours, all clock segments and the DM bar so a human can verify the hardware"
+permissions = ["led", "clock", "sensors", "system"]
+
+[launch]
+kind = "lua"
+mode = "oneshot"
