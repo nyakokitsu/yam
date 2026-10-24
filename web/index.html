@@ -29,7 +29,7 @@
   </section>
   <section>
     <h2>Настройки</h2>
-    <label>Профиль <select id="profile"><option>mini2</option><option>micro</option><option>midi</option><option>plum</option><option>sysfs-ring</option><option>custom</option></select></label>
+    <label>Профиль <select id="profile" onchange="syncCount()"><option>mini2</option><option>micro</option><option>midi</option><option>plum</option><option>sysfs-ring</option><option>custom</option></select></label>
     <label>LED count <input id="count" type="number" min="1" max="128"></label>
     <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
     <button onclick="saveSettings()">Сохранить</button>
@@ -68,8 +68,13 @@ upload.onsubmit = async event => {
 function ringColors() { const list = colors.value.split(',').map(c => c.trim()).filter(Boolean); return list.length ? Array.from({ length: Number(count.value) || list.length }, (_, i) => list[i % list.length]) : list; }
 async function setLed() { try { await request('/led', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: ringColors() }) }); } catch (error) { alert(error.message); } }
 async function turnOff() { try { await request('/led/off', { method: 'POST' }); } catch (error) { alert(error.message); } }
+const ZONE_COUNTS = { mini2: 6, micro: 3, midi: 24, plum: 3 };
+function syncCount() {
+  const zones = ZONE_COUNTS[profile.value];
+  if (zones) count.value = zones;
+}
 async function saveSettings() {
-  try { const settings = await request('/settings').then(r => r.json()); settings.led.profile = profile.value; settings.led.count = Number(count.value); settings.allow_plugin_binaries = binaries.checked; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); } catch (error) { alert(error.message); }
+  try { syncCount(); const settings = await request('/settings').then(r => r.json()); settings.led.profile = profile.value; settings.led.count = Number(count.value); settings.allow_plugin_binaries = binaries.checked; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); } catch (error) { alert(error.message); }
 }
 load();
 </script>
