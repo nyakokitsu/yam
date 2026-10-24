@@ -17,7 +17,7 @@ use std::{
     io::{Cursor, Read},
     net::TcpStream,
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -28,6 +28,9 @@ use tokio::{net::TcpListener, sync::Mutex, task};
 use tower_http::trace::TraceLayer;
 use url::Url;
 use uuid::Uuid;
+
+const YANDEXMINI_LED_UTIL: &str = "/system/vendor/quasar/led_util";
+const YANDEXMINI_LED_PATTERNS: &str = "/system/vendor/quasar/ledpatterns";
 
 #[derive(Parser)]
 struct Args {
@@ -220,6 +223,7 @@ struct App {
 #[derive(Clone)]
 struct Led {
     settings: Arc<Mutex<LedSettings>>,
+    native: Arc<Mutex<Option<tokio::process::Child>>>,
 }
 #[derive(Deserialize)]
 struct Frame {
@@ -241,6 +245,19 @@ impl Led {
         let c = self.settings.lock().await.clone();
         if colors.len() != c.count {
             bail!("expected {} colors, got {}", c.count, colors.len())
+        }
+        if c.profile == "yandexmini" {
+            if c.count != 6 {
+                bail!("yandexmini LED profile expects 6 segments")
+            }
+            let mut frame = Vec::with_capacity(colors.len());
+            for hex in &colors {
+                parse_color(hex)?;
+                frame.push(hex.trim().trim_start_matches('#').to_ascii_uppercase());
+            }
+            return self
+                .play_native_source(&format!("smooth 0\nloop\n{} 1000\n", frame.join(" ")))
+                .await;
         }
         for (i, hex) in colors.iter().enumerate() {
             let (r, g, b) = parse_color(hex)?;
@@ -266,6 +283,7 @@ impl Led {
                 .join(format!("mini2:{channel}:ring{}/brightness", i + 1)),
             "micro" => PathBuf::from(&c.sysfs_root)
                 .join(format!("micro:{channel}:ring{}/brightness", i + 1)),
+            "yandexmini" => bail!("yandexmini LED profile uses native patterns"),
             "sysfs-ring" => {
                 PathBuf::from(&c.sysfs_root).join(format!("{channel}:ring{}/brightness", i + 1))
             }
@@ -295,6 +313,10 @@ impl Led {
         Ok(())
     }
     async fn play_led(&self, path: PathBuf) -> Result<()> {
+        let c = self.settings.lock().await.clone();
+        if c.profile == "yandexmini" {
+            return self.play_native_file(&path).await;
+        }
         let source = fs::read_to_string(&path)
             .with_context(|| format!("read pattern {}", path.display()))?;
         let (looped, frames) = parse_pattern(&source)?;
@@ -311,6 +333,57 @@ impl Led {
             }
         }
         Ok(())
+    }
+    async fn play_system(&self, name: &str) -> Result<()> {
+        if self.settings.lock().await.profile != "yandexmini" {
+            bail!("system LED patterns are only available on the yandexmini profile")
+        }
+        native_pattern_name(name)?;
+        self.play_native_file(&Path::new(YANDEXMINI_LED_PATTERNS).join(name))
+            .await
+    }
+    async fn play_native_file(&self, path: &Path) -> Result<()> {
+        if !path.is_file() {
+            bail!("LED pattern not found: {}", path.display())
+        }
+        self.stop_native().await;
+        let mut child = tokio::process::Command::new(YANDEXMINI_LED_UTIL)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .with_context(|| format!("run {YANDEXMINI_LED_UTIL}"))?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Some(status) = child.try_wait()? {
+            bail!("{YANDEXMINI_LED_UTIL} exited with {status}")
+        }
+        *self.native.lock().await = Some(child);
+        Ok(())
+    }
+    async fn play_native_source(&self, source: &str) -> Result<()> {
+        let path = std::env::temp_dir().join(format!("yam-led-{}.led", std::process::id()));
+        fs::write(&path, source).with_context(|| format!("write {}", path.display()))?;
+        self.play_native_file(&path).await
+    }
+    async fn stop_native(&self) {
+        let mut slot = self.native.lock().await;
+        let Some(mut child) = slot.take() else {
+            return;
+        };
+        #[cfg(unix)]
+        if let Some(pid) = child.id() {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+        }
+        if tokio::time::timeout(Duration::from_millis(500), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
     }
 }
 fn parse_color(s: &str) -> Result<(u8, u8, u8)> {
@@ -551,6 +624,7 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
         "/proc/device-tree/model",
         "/proc/device-tree/compatible",
         "/etc/os-release",
+        "/proc/sys/kernel/hostname",
     ]
     .iter()
     .filter_map(|p| fs::read_to_string(p).ok())
@@ -570,6 +644,8 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             || text.contains("yandexmini_2")
         {
             "yandexmini_2".into()
+        } else if text.contains("yandexstationmini_1") {
+            "yandexmini_1".into()
         } else if text.contains("yandexstation_2") {
             "yandexstation_2".into()
         } else if text.contains("yandexmini") {
@@ -588,7 +664,11 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             "led.pattern.v1".into(),
         ])
     };
-    if Path::new("/sys/class/leds").exists() && !features.iter().any(|x| x == "led.ring.rgb") {
+    if fs::read_dir("/sys/class/leds")
+        .ok()
+        .is_some_and(|mut entries| entries.next().is_some())
+        && !features.iter().any(|x| x == "led.ring.rgb")
+    {
         features.push("led.sysfs".into())
     };
     if command_exists("amixer") {
@@ -1159,6 +1239,14 @@ mod tests {
         };
         assert!(network_url_allowed(&policy, "https://api.example.org/path").is_ok());
     }
+
+    #[test]
+    fn native_pattern_names_stay_in_pattern_directory() {
+        assert!(native_pattern_name("note_1.led").is_ok());
+        assert!(native_pattern_name("../note_1.led").is_err());
+        assert!(native_pattern_name("sub/note_1.led").is_err());
+        assert!(native_pattern_name("note_1").is_err());
+    }
 }
 fn clock_time(value: &str, brightness: u8) -> Result<()> {
     let bytes = value.as_bytes();
@@ -1209,6 +1297,13 @@ fn safe_relative(s: &str) -> Result<()> {
     };
     Ok(())
 }
+fn native_pattern_name(s: &str) -> Result<()> {
+    safe_relative(s)?;
+    if s.contains('/') || s.contains('\\') || !s.ends_with(".led") {
+        bail!("invalid native LED pattern name")
+    }
+    Ok(())
+}
 fn command_exists(name: &str) -> bool {
     std::env::var_os("PATH")
         .is_some_and(|paths| std::env::split_paths(&paths).any(|p| p.join(name).is_file()))
@@ -1238,6 +1333,9 @@ fn valid_mac(mac: &str) -> bool {
         })
 }
 fn configured_rgb_ring(settings: &LedSettings) -> bool {
+    if settings.profile == "yandexmini" {
+        return settings.count == 6 && Path::new(YANDEXMINI_LED_UTIL).exists();
+    }
     let sample = |channel: &str| -> Option<PathBuf> {
         match settings.profile.as_str() {
             "midi" => Some(
@@ -1320,6 +1418,15 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
                 lua.create_function(move |_, ()| {
                     tokio::runtime::Handle::current()
                         .block_on(led3.off())
+                        .map_err(mlua::Error::external)
+                })?,
+            )?;
+            let led_system = led.clone();
+            api.set(
+                "play_system",
+                lua.create_function(move |_, name: String| {
+                    tokio::runtime::Handle::current()
+                        .block_on(led_system.play_system(&name))
                         .map_err(mlua::Error::external)
                 })?,
             )?;
@@ -2057,8 +2164,16 @@ async fn main() -> Result<()> {
         settings.led.profile = "midi".into();
         settings.led.count = 24;
     }
+    if !has_settings
+        && Path::new(YANDEXMINI_LED_UTIL).exists()
+        && Path::new(YANDEXMINI_LED_PATTERNS).is_dir()
+    {
+        settings.led.profile = "yandexmini".into();
+        settings.led.count = 6;
+    }
     let led = Arc::new(Led {
         settings: Arc::new(Mutex::new(settings.led.clone())),
+        native: Arc::new(Mutex::new(None)),
     });
     let mut device = detect_device(&args.data_dir, args.model);
     if configured_rgb_ring(&settings.led) {
@@ -2067,7 +2182,12 @@ async fn main() -> Result<()> {
             .features
             .push(format!("led.ring.{}", settings.led.count));
         device.features.push("led.pattern.v1".into());
+        if settings.led.profile == "yandexmini" && Path::new(YANDEXMINI_LED_PATTERNS).is_dir() {
+            device.features.push("led.pattern.system".into());
+        }
     }
+    device.features.sort();
+    device.features.dedup();
     tracing::info!(model=%device.model,features=?device.features,"detected device");
     let app = App {
         root: args.data_dir.clone(),

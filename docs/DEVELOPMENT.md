@@ -25,7 +25,7 @@ Runtime хранит настройки и пакеты в каталоге из
 
 ## Профили устройств
 
-При старте YAM проверяет device-tree, файлы ОС, sysfs и наличие команд. Профиль доступен через `GET /api/device`.
+При старте YAM проверяет device-tree, hostname, файлы ОС, sysfs и наличие команд. Профиль доступен через `GET /api/device`.
 
 Поддерживаемые LED-профили:
 
@@ -34,10 +34,13 @@ Runtime хранит настройки и пакеты в каталоге из
 | `mini2` | `mini2:{red,green,blue}:ringN` | 6 |
 | `micro` | `micro:{red,green,blue}:ringN` | 3 |
 | `midi` | `cucumber:{red,green,blue}:ringN`, N с нуля | 24 |
+| `yandexmini` | `/system/vendor/quasar/ledpatterns/*.led` через `led_util` | 6 |
 | `sysfs-ring` | `{red,green,blue}:ringN` | задаётся в настройках |
 | `custom` | `path_template` | задаётся в настройках |
 
 Для `custom` шаблон поддерживает `{root}`, `{channel}` и `{index}`. Если настроенное RGB-кольцо доступно, YAM добавляет в профиль `led.ring.rgb`, `led.ring.<count>` и `led.pattern.v1`.
+
+В профиле `yandexmini` YAM не пишет в LED sysfs: он запускает нативный проигрыватель `/system/vendor/quasar/led_util` с файлом `.led`. Поэтому анимации с `rotate`, `gradient` и `background` воспроизводятся прошивкой без разбора в Rust. `alice.play` принимает `.led` из пакета, `alice.play_system` — паттерн из `/system/vendor/quasar/ledpatterns`. Проигрыватель долгоживущий и останавливается по `SIGTERM`; профиль не добавляет `led.sysfs`.
 
 На Станции Миди кольцом штатно управляет platformd через `/dev/fb0` и LED-триггер `ledfb-ring`. Запись в `brightness` снимает триггер, поэтому `off()` в профиле `midi` возвращает `ledfb-ring` на каждый LED.
 

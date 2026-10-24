@@ -50,7 +50,7 @@ tar -C package-source -czf my-package.yap plugin.toml main.lua assets/
 
 | Permission | API | Требование |
 | --- | --- | --- |
-| `led` | `alice.set(colors)`, `alice.off()`, `alice.play(path)`, `alice.sleep(ms)` | RGB LED-профиль |
+| `led` | `alice.set(colors)`, `alice.off()`, `alice.play(path)`, `alice.play_system(name)`, `alice.sleep(ms)` | RGB LED-профиль; для `play_system` — `led.pattern.system` |
 | `volume` | `alice.volume.set(percent)`, `alice.volume.get()` | `audio.volume.alsa` |
 | `audio` | `alice.audio.play(relative_path)` | `audio.play.aplay` |
 | `bluetooth` | `alice.bluetooth.status()`, `power(bool)`, `scan(bool)`, `pair(mac)`, `connect(mac)`, `disconnect(mac)`, `remove(mac)` | `bluetooth.bluez` |
@@ -66,6 +66,8 @@ tar -C package-source -czf my-package.yap plugin.toml main.lua assets/
 | `exec` | `alice.exec(program, args)` | runtime-настройка `allow_plugin_binaries = true` |
 
 `alice.set` принимает ровно `device.led_count` строк формата `#RRGGBB`. `alice.sleep` принимает 0–60000 мс и является точкой отмены анимации.
+
+`alice.play(path)` читает `.led` из каталога пакета. На sysfs-профилях YAM сам проигрывает кадры и функция возвращается после завершения; на нативном профиле `yandexmini` файл передаётся `led_util`, запуск возвращается сразу, а следующая LED-операция заменяет паттерн. `alice.play_system(name)` доступна только при feature `led.pattern.system` и принимает имя файла из `/system/vendor/quasar/ledpatterns`, без пути и `..`.
 
 ### HTTP(S)
 
