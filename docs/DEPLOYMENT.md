@@ -2,14 +2,27 @@
 
 ## Installer
 
-Installer принимает URL готового бинарника `yamd` и необязательный каталог установки. Каталог по умолчанию — `/data/quazar/yam`.
+Installer скачивает последний GitHub Release и проверяет `SHA256SUMS`. Он устанавливает CLI на Linux x86_64 или macOS arm64-компьютер в `~/.local/bin/yam`, находит колонку через `adb devices` (либо запрашивает её IP) и загружает/запускает `yamd` на колонке в `/data/quazar/yam`.
 
 ```sh
-curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/yamd-aarch64-linux-musl
-curl -fsSL https://<host>/yaff/install.sh | sudo sh -s -- https://<host>/yaff/yamd-aarch64-linux-musl /data/quazar/custom-yam https://<host>/yaff/yam-aarch64-linux-musl
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh -s -- 0.1.1 "$HOME/.local/bin"
 ```
 
-Первый URL — daemon `yamd`; третий необязательный URL — CLI `yam`. Скрипт создаёт `bin/yamd`, `data/` и `run.sh`. На системах с systemd он также устанавливает и запускает `yam.service`.
+Первый аргумент — версия (по умолчанию `latest`), второй — каталог для `yam` CLI. Для автоматического поиска и развёртывания необходим Android Platform Tools (`adb`).
+
+## Windows
+
+В PowerShell скачайте installer из репозитория и запустите его. По умолчанию он получает последний GitHub Release, проверяет `SHA256SUMS`, устанавливает CLI в `%LOCALAPPDATA%\YAM\bin`, находит колонку через `adb devices` (или запрашивает IP) и обновляет `yamd` на колонке:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 -OutFile install.ps1
+.\install.ps1
+```
+
+Для конкретной версии: `.\install.ps1 -Version 0.1.1`. Windows CLI управляет daemon на Linux-колонке через `--url http://<speaker-ip>:8099`.
+
+Удаление: на Linux/macOS запустите `curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh -s -- --uninstall`; на Windows — `.\install.ps1 -Uninstall`. Unix-вариант удаляет CLI с компьютера и останавливает/удаляет `yamd` на найденной через ADB колонке; Windows-вариант удаляет локальный CLI.
 
 ## Развёртывание через ADB
 

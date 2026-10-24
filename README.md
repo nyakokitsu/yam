@@ -1,13 +1,19 @@
 # YAM
 
-yam = Y Application Manager. Ставьте на свою колонку .yap
+yam = Y Application Manager. Ставьте на свою колонку .yap.
 
+Linux / macOS:
 ```sh
-cargo check
-cargo run --bin yamd -- --data-dir ./data
+curl -fsSL https://raw.githubusercontent.com/nyakokitsu/yam/main/install.sh | sh
 ```
 
-Открываете `http://<speaker-ip>:8099`.
+Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 | iex
+```
+
+Установщик сам найдет рабочую колонку и установит через adb на нее `yamd`
 
 # Документация
 

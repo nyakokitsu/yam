@@ -23,6 +23,8 @@ struct Cli {
 enum Command {
     Install {
         package: PathBuf,
+        /// Version in the registry. When provided, package is treated as its registry ID.
+        version: Option<String>,
     },
     List,
     Ps,
@@ -94,21 +96,34 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let client = Client::new();
     match cli.command {
-        Command::Install { package } => {
-            let file =
-                fs::File::open(&package).with_context(|| format!("open {}", package.display()))?;
-            let part = multipart::Part::reader(file).file_name(
-                package
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-            );
-            let response = client
-                .post(endpoint(&cli.url, "/api/plugins"))
-                .multipart(multipart::Form::new().part("package", part))
-                .send()?;
-            print_response(response)?;
+        Command::Install { package, version } => {
+            if let Some(version) = version {
+                let id = package
+                    .to_str()
+                    .context("registry package ID must be valid UTF-8")?;
+                install_registry_package(
+                    &client,
+                    &cli.url,
+                    cli.registry.as_deref().unwrap_or(DEFAULT_REGISTRY_INDEX),
+                    id,
+                    &version,
+                )?;
+            } else {
+                let file = fs::File::open(&package)
+                    .with_context(|| format!("open {}", package.display()))?;
+                let part = multipart::Part::reader(file).file_name(
+                    package
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                );
+                let response = client
+                    .post(endpoint(&cli.url, "/api/plugins"))
+                    .multipart(multipart::Form::new().part("package", part))
+                    .send()?;
+                print_response(response)?;
+            }
         }
         Command::List => {
             let packages: Value =
@@ -174,51 +189,7 @@ fn main() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&packages)?);
                 }
                 RegistryCommand::Pull { id, version } => {
-                    let (source, packages) = registry_packages(&client, &registry)?;
-                    let package = match source {
-                        RegistrySource::Api => client
-                            .get(endpoint(
-                                &registry,
-                                &format!("/api/packages/{id}/{version}/download"),
-                            ))
-                            .send()?
-                            .error_for_status()?
-                            .bytes()?,
-                        RegistrySource::Static { index_url } => {
-                            let entry = packages
-                                .as_array()
-                                .and_then(|entries| {
-                                    entries.iter().find(|entry| {
-                                        entry["id"] == id && entry["version"] == version
-                                    })
-                                })
-                                .context("package version not found in static registry")?;
-                            let package_url = entry["url"]
-                                .as_str()
-                                .context("static registry entry has no URL")?;
-                            let package = client
-                                .get(static_package_url(&index_url, package_url)?)
-                                .send()?
-                                .error_for_status()?
-                                .bytes()?;
-                            let expected = entry["sha256"]
-                                .as_str()
-                                .context("static registry entry has no SHA-256")?;
-                            let actual = format!("{:x}", Sha256::digest(&package));
-                            if actual != expected {
-                                bail!("package checksum mismatch")
-                            }
-                            package
-                        }
-                    };
-                    let part = multipart::Part::bytes(package.to_vec())
-                        .file_name(format!("{id}-{version}.yap"));
-                    print_response(
-                        client
-                            .post(endpoint(&cli.url, "/api/plugins"))
-                            .multipart(multipart::Form::new().part("package", part))
-                            .send()?,
-                    )?;
+                    install_registry_package(&client, &cli.url, &registry, &id, &version)?;
                 }
             }
         }
@@ -259,6 +230,73 @@ fn main() -> Result<()> {
 enum RegistrySource {
     Api,
     Static { index_url: String },
+}
+
+fn install_registry_package(
+    client: &Client,
+    yam_url: &str,
+    registry: &str,
+    id: &str,
+    version: &str,
+) -> Result<()> {
+    let daemon_response = client
+        .post(endpoint(yam_url, "/api/plugins/registry"))
+        .json(&serde_json::json!({
+            "id": id,
+            "version": version,
+            "registry": registry,
+        }))
+        .send();
+    if let Ok(response) = daemon_response {
+        if response.status().is_success() {
+            return print_response(response);
+        }
+    }
+
+    let (source, packages) = registry_packages(client, registry)?;
+    let package = match source {
+        RegistrySource::Api => client
+            .get(endpoint(
+                registry,
+                &format!("/api/packages/{id}/{version}/download"),
+            ))
+            .send()?
+            .error_for_status()?
+            .bytes()?,
+        RegistrySource::Static { index_url } => {
+            let entry = packages
+                .as_array()
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|entry| entry["id"] == id && entry["version"] == version)
+                })
+                .context("package version not found in static registry")?;
+            let package_url = entry["url"]
+                .as_str()
+                .context("static registry entry has no URL")?;
+            let package = client
+                .get(static_package_url(&index_url, package_url)?)
+                .send()?
+                .error_for_status()?
+                .bytes()?;
+            let expected = entry["sha256"]
+                .as_str()
+                .context("static registry entry has no SHA-256")?;
+            let actual = format!("{:x}", Sha256::digest(&package));
+            if actual != expected {
+                bail!("package checksum mismatch")
+            }
+            package
+        }
+    };
+    let part = multipart::Part::bytes(package.to_vec()).file_name(format!("{id}-{version}.yap"));
+    print_response(
+        client
+            .post(endpoint(yam_url, "/api/plugins"))
+            .multipart(multipart::Form::new().part("package", part))
+            .send()?,
+    )
 }
 
 fn registry_packages(client: &Client, registry: &str) -> Result<(RegistrySource, Value)> {

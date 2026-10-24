@@ -4,7 +4,7 @@
 
 ## Структура пакета
 
-`.yap` — ZIP или gzip-сжатый TAR-архив. В его корне должен находиться `plugin.toml`.
+`.yap` — gzip-сжатый TAR-архив. В его корне должен находиться `plugin.toml`.
 
 ```text
 my-plugin.yap
@@ -35,7 +35,7 @@ features = ["led.ring.rgb", "led.ring.3"]
 
 ```sh
 cd my-plugin
-zip -r ../my-plugin.yap plugin.toml main.lua patterns sounds bin
+tar -C package-source -czf my-package.yap plugin.toml main.lua assets/
 ```
 
 ## Lua-окружение

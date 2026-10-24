@@ -10,6 +10,7 @@ use clap::Parser;
 use flate2::read::GzDecoder;
 use mlua::{Lua, LuaOptions, LuaSerdeExt, StdLib};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
@@ -1907,6 +1908,66 @@ async fn install(State(a): State<App>, mut form: Multipart) -> Result<Json<Manif
     }
     Err(ApiError(anyhow!("missing package field")))
 }
+
+#[derive(Deserialize)]
+struct RegistryInstall {
+    id: String,
+    version: String,
+    registry: String,
+}
+
+async fn install_registry(
+    State(a): State<App>,
+    Json(request): Json<RegistryInstall>,
+) -> Result<Json<Manifest>, ApiError> {
+    let package = task::spawn_blocking(move || {
+        download_registry_package(&request.registry, &request.id, &request.version)
+    })
+    .await
+    .context("registry download task failed")??;
+    let manifest = a.plugins.lock().await.install(&package)?;
+    Ok(Json(manifest))
+}
+
+fn download_registry_package(registry: &str, id: &str, version: &str) -> Result<Vec<u8>> {
+    let index_url = if registry.trim_end_matches('/').ends_with("index.json") {
+        registry.to_string()
+    } else {
+        format!("{}/index.json", registry.trim_end_matches('/'))
+    };
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(60))
+        .build()?;
+    let index: serde_json::Value = client.get(&index_url).send()?.error_for_status()?.json()?;
+    let entry = index["packages"]
+        .as_array()
+        .and_then(|packages| {
+            packages
+                .iter()
+                .find(|entry| entry["id"] == id && entry["version"] == version)
+        })
+        .context("package version not found in registry")?;
+    let package_url = entry["url"]
+        .as_str()
+        .context("registry entry has no package URL")?;
+    let package_url = Url::parse(package_url)
+        .or_else(|_| Url::parse(&index_url)?.join(package_url))?
+        .to_string();
+    let package = client
+        .get(package_url)
+        .send()?
+        .error_for_status()?
+        .bytes()?
+        .to_vec();
+    let expected = entry["sha256"]
+        .as_str()
+        .context("registry entry has no SHA-256")?;
+    if format!("{:x}", Sha256::digest(&package)) != expected {
+        bail!("package checksum mismatch")
+    }
+    Ok(package)
+}
 async fn toggle(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
@@ -2125,6 +2186,7 @@ async fn main() -> Result<()> {
     if web.api {
         router = router
             .route("/api/plugins", get(list).post(install))
+            .route("/api/plugins/registry", post(install_registry))
             .route("/api/plugins/:id", delete(remove))
             .route("/api/plugins/:id/toggle", post(toggle))
             .route("/api/plugins/:id/invoke", post(invoke))

@@ -1,70 +1,113 @@
 #!/bin/sh
 set -eu
 
-URL=${1:-${YAM_BINARY_URL:-}}
-PREFIX=${2:-${YAM_PREFIX:-/data/quazar/yam}}
-CLI_URL=${3:-${YAM_CLI_URL:-}}
-SERVICE_NAME=yam.service
-
-if [ "$(id -u)" -ne 0 ]; then
-  echo 'Run as root (use sudo).' >&2
-  exit 1
-fi
-if [ -z "$URL" ]; then
-  echo 'Binary URL is required: install.sh https://host/yamd-aarch64-linux-musl' >&2
-  exit 2
-fi
-case "$(uname -m)" in
-  aarch64|armv7l|armv6l|armhf) ;;
-  *) echo "Unsupported architecture $(uname -m); YAM installer requires ARM." >&2; exit 3 ;;
+ACTION=install
+case "${1:-}" in
+  --uninstall|uninstall) ACTION=uninstall; shift ;;
 esac
-case "$URL" in https://*|http://*) ;; *) echo 'Refusing a non-HTTP(S) binary URL.' >&2; exit 2;; esac
+VERSION=${1:-${YAM_VERSION:-latest}}
+BIN_DIR=${2:-${YAM_BIN_DIR:-$HOME/.local/bin}}
+REPOSITORY=https://github.com/nyakokitsu/yam
+DEVICE_PREFIX=/data/quazar/yam
 
-mkdir -p "$PREFIX/bin" "$PREFIX/data"
-tmp=$(mktemp "${TMPDIR:-/tmp}/yam.XXXXXX")
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
-if command -v curl >/dev/null 2>&1; then
-  curl -fL --proto '=https,http' --tlsv1.2 "$URL" -o "$tmp"
-elif command -v wget >/dev/null 2>&1; then
-  wget -O "$tmp" "$URL"
-else
-  echo 'curl or wget is required.' >&2; exit 4
+if [ "$ACTION" = install ]; then
+  case "$(uname -s):$(uname -m)" in
+    Linux:x86_64|Linux:amd64) CLI_ASSET=yam-x86_64-unknown-linux-musl ;;
+    Darwin:arm64|Darwin:aarch64) CLI_ASSET=yam-aarch64-apple-darwin ;;
+    *) echo "Unsupported host platform $(uname -s) $(uname -m)." >&2; exit 3 ;;
+  esac
 fi
-install -m 0755 "$tmp" "$PREFIX/bin/yamd"
-if [ -n "$CLI_URL" ]; then
+
+case "$VERSION" in
+  latest) RELEASE_URL="$REPOSITORY/releases/latest/download" ;;
+  v*) RELEASE_URL="$REPOSITORY/releases/download/$VERSION" ;;
+  *) RELEASE_URL="$REPOSITORY/releases/download/v$VERSION" ;;
+esac
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/yam.XXXXXX")
+trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+download() {
+  url=$1 output=$2
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --proto '=https,http' --tlsv1.2 "$CLI_URL" -o "$tmp"
+    curl -fL --proto '=https,http' --tlsv1.2 "$url" -o "$output"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$output" "$url"
   else
-    wget -O "$tmp" "$CLI_URL"
+    echo 'curl or wget is required.' >&2; exit 4
   fi
-  install -m 0755 "$tmp" "$PREFIX/bin/yam"
+}
+verify() {
+  file=$1
+  expected=$(awk -v name="$(basename "$file")" '$2 == name {print $1}' "$tmpdir/SHA256SUMS")
+  [ -n "$expected" ] || { echo "No checksum for $(basename "$file")" >&2; exit 5; }
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$file" | awk '{print $1}')
+  elif command -v openssl >/dev/null 2>&1; then
+    actual=$(openssl dgst -sha256 "$file" | awk '{print $NF}')
+  else
+    echo 'sha256sum or openssl is required.' >&2; exit 5
+  fi
+  [ "$actual" = "$expected" ] || { echo "Checksum mismatch for $(basename "$file")" >&2; exit 5; }
+}
+
+command -v adb >/dev/null 2>&1 || {
+  echo 'adb is required to deploy yamd. Install Android Platform Tools first.' >&2; exit 4;
+}
+
+find_device() {
+  adb devices </dev/null | awk 'NR > 1 && $2 == "device" {print $1}' | while IFS= read -r serial; do
+    arch=$(adb -s "$serial" shell uname -m </dev/null 2>/dev/null | tr -d '\r') || continue
+    case "$arch" in aarch64|arm64) printf '%s\n' "$serial"; return 0;; esac
+  done
+  return 1
+}
+
+DEVICE=$(find_device || true)
+if [ -z "$DEVICE" ]; then
+  printf 'Yandex Station IP address: ' >&2
+  IFS= read -r ip </dev/tty
+  [ -n "$ip" ] || { echo 'IP address is required.' >&2; exit 6; }
+  DEVICE="$ip:5555"
+  adb connect "$DEVICE" </dev/null >&2
+  sleep 1
+  adb -s "$DEVICE" get-state </dev/null >/dev/null
 fi
-cat > "$PREFIX/run.sh" <<EOF
+
+case "$DEVICE" in
+  *:*) STATION_IP=${DEVICE%:*} ;;
+  *)
+    STATION_IP=$(adb -s "$DEVICE" shell 'ip route get 1.1.1.1 2>/dev/null' </dev/null 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}' | tr -d '\r' | head -n 1)
+    if [ -z "$STATION_IP" ]; then
+      printf 'Yandex Station IP address: ' >&2
+      IFS= read -r STATION_IP </dev/tty
+    fi
+    ;;
+esac
+[ -n "$STATION_IP" ] || { echo 'IP address is required.' >&2; exit 6; }
+
+if [ "$ACTION" = uninstall ]; then
+  rm -f "$BIN_DIR/yam" "$BIN_DIR/yam-bin"
+  adb -s "$DEVICE" shell "if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; rm -rf $DEVICE_PREFIX" </dev/null
+  echo "YAM removed from $BIN_DIR and $DEVICE ($DEVICE_PREFIX)."
+  exit 0
+fi
+
+download "$RELEASE_URL/SHA256SUMS" "$tmpdir/SHA256SUMS"
+download "$RELEASE_URL/$CLI_ASSET" "$tmpdir/$CLI_ASSET"
+download "$RELEASE_URL/yamd-aarch64-linux-musl" "$tmpdir/yamd-aarch64-linux-musl"
+verify "$tmpdir/$CLI_ASSET"
+verify "$tmpdir/yamd-aarch64-linux-musl"
+
+mkdir -p "$BIN_DIR"
+install -m 0755 "$tmpdir/$CLI_ASSET" "$BIN_DIR/yam-bin"
+cat >"$BIN_DIR/yam" <<EOF
 #!/bin/sh
-exec "$PREFIX/bin/yamd" --data-dir "$PREFIX/data"
+exec env YAM_URL="\${YAM_URL:-http://$STATION_IP:8099}" "$BIN_DIR/yam-bin" "\$@"
 EOF
-chmod 0755 "$PREFIX/run.sh"
-if command -v systemctl >/dev/null 2>&1; then
-cat > /etc/systemd/system/$SERVICE_NAME <<EOF
-[Unit]
-Description=YAM package daemon
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$PREFIX
-ExecStart=$PREFIX/bin/yamd --data-dir $PREFIX/data
-Restart=on-failure
-RestartSec=2
-NoNewPrivileges=true
-PrivateTmp=true
-[Install]
-WantedBy=multi-user.target
-EOF
-systemctl daemon-reload
-systemctl enable --now "$SERVICE_NAME"
-else
-  echo "systemd not found. Start YAM with: $PREFIX/run.sh" >&2
-fi
-echo "YAM installed in $PREFIX. Open http://$(hostname -I 2>/dev/null | awk '{print $1}'):8099"
+chmod 0755 "$BIN_DIR/yam"
+adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data" </dev/null
+adb -s "$DEVICE" push "$tmpdir/yamd-aarch64-linux-musl" "$DEVICE_PREFIX/bin/yamd.new" </dev/null >/dev/null
+adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/yamd.new; if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; mv $DEVICE_PREFIX/bin/yamd.new $DEVICE_PREFIX/bin/yamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/yamd.pid --startas $DEVICE_PREFIX/bin/yamd -- --data-dir $DEVICE_PREFIX/data" </dev/null
+
+echo "YAM $VERSION CLI installed in $BIN_DIR/yam"
+echo "yamd deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"
