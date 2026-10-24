@@ -266,6 +266,8 @@ impl Led {
                 .join(format!("mini2:{channel}:ring{}/brightness", i + 1)),
             "micro" => PathBuf::from(&c.sysfs_root)
                 .join(format!("micro:{channel}:ring{}/brightness", i + 1)),
+            "plum" => PathBuf::from(&c.sysfs_root)
+                .join(format!("plum:{channel}:ring{}/brightness", i + 1)),
             "sysfs-ring" => {
                 PathBuf::from(&c.sysfs_root).join(format!("{channel}:ring{}/brightness", i + 1))
             }
@@ -566,6 +568,10 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             || text.contains("yandex,cucumber")
         {
             "yandexmidi".into()
+        } else if Path::new("/sys/class/leds/plum:red:ring1/brightness").exists()
+            || text.contains("yandex,plum")
+        {
+            "yandexplum".into()
         } else if Path::new("/sys/class/leds/mini2:red:ring1/brightness").exists()
             || text.contains("yandexmini_2")
         {
@@ -735,12 +741,29 @@ fn configured_light_sensor(name: &str) -> Result<PathBuf> {
 enum ClockLayout {
     Mini2(String),
     Cucumber(String),
+    /// Yandex Station Lite 2 (`plum`). Same `{prefix}clock{segment}` shape as
+    /// Mini2, but positions are 0-based and the separator is three separate
+    /// segments instead of PLUS/MINUS markers.
+    Plum(String),
 }
 const CUCUMBER_EXTRA_SEGMENTS: [&str; 14] = [
     "H1", "H2", "L1", "L2", "M1", "M2", "P1", "P2", "P4", "P5", "Q1", "Q2", "Q4", "Q5",
 ];
 impl ClockLayout {
     fn segments(&self) -> Vec<String> {
+        // plum: four positions 0..3, eight parts A..H, and a three-segment
+        // separator (DH/DM/DL) instead of PLUS1/PLUS2/MINUS. DEGREE is the
+        // standalone marker next to the digits.
+        if let ClockLayout::Plum(_) = self {
+            let mut segments = Vec::new();
+            for position in 0..=3 {
+                for part in ["A", "B", "C", "D", "E", "F", "G", "H"] {
+                    segments.push(format!("{part}{position}"));
+                }
+            }
+            segments.extend(["DEGREE".into(), "DH".into(), "DM".into(), "DL".into()]);
+            return segments;
+        }
         let mut segments = Vec::new();
         for position in 1..=4 {
             for part in ["A", "B", "C", "D", "E", "F", "G"] {
@@ -754,12 +777,13 @@ impl ClockLayout {
                 segments.push("DEGREE".into());
                 segments.extend(CUCUMBER_EXTRA_SEGMENTS.iter().map(|x| x.to_string()));
             }
+            ClockLayout::Plum(_) => unreachable!(),
         }
         segments
     }
     fn path(&self, segment: &str) -> PathBuf {
         match self {
-            ClockLayout::Mini2(prefix) => {
+            ClockLayout::Mini2(prefix) | ClockLayout::Plum(prefix) => {
                 Path::new("/sys/class/leds").join(format!("{prefix}clock{segment}/brightness"))
             }
             ClockLayout::Cucumber(prefix) => {
@@ -801,6 +825,12 @@ fn clock_layout() -> Option<ClockLayout> {
         .flatten()
         .filter_map(|entry| entry.file_name().into_string().ok())
         .collect::<Vec<_>>();
+    // plum is detected first: its names also end with "clockA1", so the Mini2
+    // probe below would otherwise claim it and then fail `complete()`.
+    let plum = names
+        .iter()
+        .filter_map(|name| name.strip_suffix("clockA0"))
+        .map(|prefix| ClockLayout::Plum(prefix.into()));
     let upper = names
         .iter()
         .filter_map(|name| name.strip_suffix("clockA1"))
@@ -809,7 +839,9 @@ fn clock_layout() -> Option<ClockLayout> {
         .iter()
         .filter_map(|name| name.strip_suffix("white:clock-a1"))
         .map(|prefix| ClockLayout::Cucumber(prefix.into()));
-    upper.chain(cucumber).find(ClockLayout::complete)
+    plum.chain(upper)
+        .chain(cucumber)
+        .find(ClockLayout::complete)
 }
 fn clock_segments() -> Vec<String> {
     clock_layout()
@@ -1143,6 +1175,25 @@ mod tests {
     }
 
     #[test]
+    fn maps_plum_clock_segments() {
+        let layout = ClockLayout::Plum("plum:white:".into());
+        // 8 parts x 4 positions + DEGREE + DH + DM + DL.
+        assert_eq!(layout.segments().len(), 36);
+        assert!(layout.segments().contains(&"A0".to_string()));
+        assert!(layout.segments().contains(&"H3".to_string()));
+        assert!(layout.segments().contains(&"DH".to_string()));
+        assert!(!layout.segments().contains(&"PLUS1".to_string()));
+        assert_eq!(
+            layout.path("A0"),
+            Path::new("/sys/class/leds/plum:white:clockA0/brightness")
+        );
+        assert_eq!(
+            layout.path("DL"),
+            Path::new("/sys/class/leds/plum:white:clockDL/brightness")
+        );
+    }
+
+    #[test]
     fn network_policy_rejects_local_address() {
         let policy = NetworkPolicy {
             allow: vec!["127.0.0.1".into()],
@@ -1183,13 +1234,29 @@ fn clock_time(value: &str, brightness: u8) -> Result<()> {
         (b'9', &["A", "B", "C", "D", "F", "G"]),
     ]);
     let mut segments = HashMap::new();
+    let layout = clock_layout().context("segment clock is not available")?;
+    // plum numbers its positions from 0 and has no PLUS/MINUS markers: its
+    // colon is the upper and lower halves of the separator.
+    let base = if matches!(layout, ClockLayout::Plum(_)) {
+        0
+    } else {
+        1
+    };
     for (index, digit) in [bytes[0], bytes[1], bytes[3], bytes[4]].iter().enumerate() {
         for part in digits.get(digit).context("invalid clock digit")?.iter() {
-            segments.insert(format!("{part}{}", index + 1), brightness);
+            segments.insert(format!("{part}{}", index + base), brightness);
         }
     }
-    segments.insert("PLUS1".into(), brightness);
-    segments.insert("PLUS2".into(), brightness);
+    match &layout {
+        ClockLayout::Plum(_) => {
+            segments.insert("DH".into(), brightness);
+            segments.insert("DL".into(), brightness);
+        }
+        _ => {
+            segments.insert("PLUS1".into(), brightness);
+            segments.insert("PLUS2".into(), brightness);
+        }
+    }
     clock_write(&segments)
 }
 fn validate_id(s: &str) -> Result<()> {
@@ -1251,6 +1318,10 @@ fn configured_rgb_ring(settings: &LedSettings) -> bool {
             "micro" => Some(
                 PathBuf::from(&settings.sysfs_root)
                     .join(format!("micro:{channel}:ring1/brightness")),
+            ),
+            "plum" => Some(
+                PathBuf::from(&settings.sysfs_root)
+                    .join(format!("plum:{channel}:ring1/brightness")),
             ),
             "sysfs-ring" => Some(
                 PathBuf::from(&settings.sysfs_root).join(format!("{channel}:ring1/brightness")),
@@ -2056,6 +2127,10 @@ async fn main() -> Result<()> {
     if !has_settings && Path::new("/sys/class/leds/cucumber:red:ring0/brightness").exists() {
         settings.led.profile = "midi".into();
         settings.led.count = 24;
+    }
+    if !has_settings && Path::new("/sys/class/leds/plum:red:ring1/brightness").exists() {
+        settings.led.profile = "plum".into();
+        settings.led.count = 3;
     }
     let led = Arc::new(Led {
         settings: Arc::new(Mutex::new(settings.led.clone())),

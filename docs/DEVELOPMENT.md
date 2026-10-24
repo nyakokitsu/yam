@@ -34,12 +34,15 @@ Runtime хранит настройки и пакеты в каталоге из
 | `mini2` | `mini2:{red,green,blue}:ringN` | 6 |
 | `micro` | `micro:{red,green,blue}:ringN` | 3 |
 | `midi` | `cucumber:{red,green,blue}:ringN`, N с нуля | 24 |
+| `plum` | `plum:{red,green,blue}:ringN` | 3 |
 | `sysfs-ring` | `{red,green,blue}:ringN` | задаётся в настройках |
 | `custom` | `path_template` | задаётся в настройках |
 
 Для `custom` шаблон поддерживает `{root}`, `{channel}` и `{index}`. Если настроенное RGB-кольцо доступно, YAM добавляет в профиль `led.ring.rgb`, `led.ring.<count>` и `led.pattern.v1`.
 
 На Станции Миди кольцом штатно управляет platformd через `/dev/fb0` и LED-триггер `ledfb-ring`. Запись в `brightness` снимает триггер, поэтому `off()` в профиле `midi` возвращает `ledfb-ring` на каждый LED.
+
+На Станции Лайт 2 (`plum`) запись в `brightness` триггер `led_ring_fb` не снимает, поэтому `off()` просто гасит каналы.
 
 ## Целевые сборки
 
