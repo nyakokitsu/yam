@@ -1,0 +1,9 @@
+id = "midi-logo"
+name = "Midi logo"
+version = "1.0.0"
+entry = "main.lua"
+description = "Light the center logo independently of the ring"
+permissions = ["led"]
+
+[compatibility]
+features = ["led.logo.rgb", "led.logo.6"]

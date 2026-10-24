@@ -8,6 +8,7 @@ YAM не линкуется с закрытым SDK колонок. Вместо
 | --- | --- | --- | --- |
 | RGB-кольцо Mini 2 / Micro | `yandexmini_2/.../yandex_mini2_led_controller.cpp`, `yandexmicro/.../yandex_micro_led_controller.cpp` | sysfs LED brightness | `led.ring.rgb` |
 | RGB-кольцо Midi | `cucumber:{red,green,blue}:ring0..23` | sysfs LED brightness | `led.ring.rgb` |
+| RGB-логотип Midi | `cucumber:{red,green,blue}:logo0..5`, trigger `ledfb-logo` | полный набор brightness и trigger для 6 RGB LED при профиле `midi` | `led.logo.rgb`, `led.logo.6` |
 | Сегментные часы | `yandexmini_2/.../yandex_mini2_clock_led_controller.cpp` | все 32 `*clock{A..G}{1..4}/brightness` или 45 `*white:clock-*` (Midi) в одном LED-профиле | `display.clock.segment.v1` |
 | Освещённость | `libs/brightness_control/light_sensor.cpp` | `iio:device*/in_intensity_input` | `sensor.ambient_light.iio` |
 | Температура | portable PowerManager и стандартный Linux hwmon | thermal-zone/hwmon sysfs | `sensor.temperature.sysfs` |

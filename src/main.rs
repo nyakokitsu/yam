@@ -294,6 +294,73 @@ impl Led {
         }
         Ok(())
     }
+    async fn draw_logo(&self, colors: Vec<String>) -> Result<()> {
+        let parsed = logo_colors(&colors)?;
+        let settings = self.settings.lock().await;
+        if !configured_rgb_logo(&settings) {
+            bail!("RGB logo is unavailable for the configured LED profile")
+        }
+        for (i, (r, g, b)) in parsed.into_iter().enumerate() {
+            for (channel, value) in [("red", r), ("green", g), ("blue", b)] {
+                let path = logo_path(&settings, channel, i).join("brightness");
+                fs::write(&path, value.to_string())
+                    .with_context(|| format!("write {}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+    async fn off_logo(&self) -> Result<()> {
+        let settings = self.settings.lock().await;
+        if !configured_rgb_logo(&settings) {
+            bail!("RGB logo is unavailable for the configured LED profile")
+        }
+        for i in 0..6 {
+            for channel in ["red", "green", "blue"] {
+                let led = logo_path(&settings, channel, i);
+                fs::write(led.join("brightness"), "0")
+                    .with_context(|| format!("release {}", led.display()))?;
+                fs::write(led.join("trigger"), "ledfb-logo")
+                    .with_context(|| format!("restore trigger {}", led.display()))?;
+            }
+        }
+        Ok(())
+    }
+    async fn play_logo(&self, path: PathBuf, cancelled: &AtomicBool) -> Result<()> {
+        let source = fs::read_to_string(&path)
+            .with_context(|| format!("read pattern {}", path.display()))?;
+        let (looped, frames) = parse_pattern(&source)?;
+        if frames.is_empty() {
+            bail!("pattern has no frames")
+        }
+        for frame in &frames {
+            logo_colors(&frame.colors)?;
+        }
+        loop {
+            for frame in &frames {
+                if cancelled.load(Ordering::Relaxed) {
+                    bail!("plugin stopped")
+                }
+                self.draw_logo(frame.colors.clone()).await?;
+                let end = std::time::Instant::now()
+                    .checked_add(Duration::from_millis(frame.delay_ms))
+                    .context("frame delay is too large")?;
+                loop {
+                    if cancelled.load(Ordering::Relaxed) {
+                        bail!("plugin stopped")
+                    }
+                    let remaining = end.saturating_duration_since(std::time::Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    tokio::time::sleep(remaining.min(Duration::from_millis(20))).await;
+                }
+            }
+            if !looped {
+                break;
+            }
+        }
+        Ok(())
+    }
     async fn play_led(&self, path: PathBuf) -> Result<()> {
         let source = fs::read_to_string(&path)
             .with_context(|| format!("read pattern {}", path.display()))?;
@@ -315,7 +382,7 @@ impl Led {
 }
 fn parse_color(s: &str) -> Result<(u8, u8, u8)> {
     let h = s.trim().trim_start_matches('#');
-    if h.len() != 6 {
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("invalid RGB color {s}")
     };
     Ok((
@@ -1270,9 +1337,92 @@ fn configured_rgb_ring(settings: &LedSettings) -> bool {
         .all(|channel| sample(channel).is_some_and(|p| p.exists()))
 }
 
+fn logo_path(settings: &LedSettings, channel: &str, index: usize) -> PathBuf {
+    PathBuf::from(&settings.sysfs_root).join(format!("cucumber:{channel}:logo{index}"))
+}
+fn configured_rgb_logo(settings: &LedSettings) -> bool {
+    settings.profile == "midi"
+        && (0..6).all(|i| {
+            ["red", "green", "blue"].iter().all(|channel| {
+                let path = logo_path(settings, channel, i);
+                path.join("brightness").is_file() && path.join("trigger").is_file()
+            })
+        })
+}
+fn logo_colors(colors: &[String]) -> Result<Vec<(u8, u8, u8)>> {
+    if colors.len() != 6 {
+        bail!("expected 6 logo colors, got {}", colors.len())
+    }
+    colors.iter().map(|value| parse_color(value)).collect()
+}
+fn refresh_logo_features(device: &mut DeviceProfile, settings: &LedSettings) {
+    device
+        .features
+        .retain(|f| f != "led.logo.rgb" && f != "led.logo.6");
+    if configured_rgb_logo(settings) {
+        device
+            .features
+            .extend(["led.logo.rgb".into(), "led.logo.6".into()]);
+    }
+}
+fn install_logo_api(
+    lua: &Lua,
+    api: &mlua::Table,
+    led: Arc<Led>,
+    cancelled: Arc<AtomicBool>,
+    root: PathBuf,
+) -> mlua::Result<()> {
+    let logo = lua.create_table()?;
+    let draw_led = led.clone();
+    let draw_cancelled = cancelled.clone();
+    logo.set(
+        "set",
+        lua.create_function(move |_, colors: mlua::Table| {
+            if draw_cancelled.load(Ordering::Relaxed) {
+                return Err(mlua::Error::external("plugin stopped"));
+            }
+            let colors = colors
+                .sequence_values::<String>()
+                .collect::<mlua::Result<Vec<_>>>()?;
+            tokio::runtime::Handle::current()
+                .block_on(draw_led.draw_logo(colors))
+                .map_err(mlua::Error::external)
+        })?,
+    )?;
+    let off_led = led.clone();
+    let off_cancelled = cancelled.clone();
+    logo.set(
+        "off",
+        lua.create_function(move |_, ()| {
+            if off_cancelled.load(Ordering::Relaxed) {
+                return Err(mlua::Error::external("plugin stopped"));
+            }
+            tokio::runtime::Handle::current()
+                .block_on(off_led.off_logo())
+                .map_err(mlua::Error::external)
+        })?,
+    )?;
+    logo.set(
+        "play",
+        lua.create_function(move |_, name: String| {
+            safe_relative(&name).map_err(mlua::Error::external)?;
+            tokio::runtime::Handle::current()
+                .block_on(led.play_logo(root.join(name), &cancelled))
+                .map_err(mlua::Error::external)
+        })?,
+    )?;
+    api.set("logo", logo)
+}
+
 async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBool>) -> Result<()> {
     let device = app.device.lock().await.clone();
-    let led_count = app.led.settings.lock().await.count;
+    let (led_count, logo_led_count) = {
+        let settings = app.led.settings.lock().await;
+        (
+            settings.count,
+            if configured_rgb_logo(&settings) { 6 } else { 0 },
+        )
+    };
     let (manifest, root, allowed) = {
         let p = app.plugins.lock().await;
         if !p.enabled.contains(&id) {
@@ -1298,6 +1448,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         let api = lua.create_table()?;
         let permissions: HashSet<_> = manifest.permissions.iter().map(String::as_str).collect();
         if permissions.contains("led") {
+            install_logo_api(&lua, &api, led.clone(), cancelled.clone(), root.clone())?;
             let led2 = led.clone();
             let cancelled_set = cancelled.clone();
             api.set(
@@ -1684,6 +1835,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         lua_device.set("model", device.model)?;
         lua_device.set("architecture", device.architecture)?;
         lua_device.set("led_count", led_count)?;
+        lua_device.set("logo_led_count", logo_led_count)?;
         let lua_features = lua.create_table()?;
         for (i, feature) in device.features.iter().enumerate() {
             lua_features.set(i + 1, feature.as_str())?;
@@ -1942,6 +2094,7 @@ async fn stop_plugin(
         token.store(true, Ordering::Relaxed);
     }
     let _ = a.led.off().await;
+    let _ = a.led.off_logo().await;
     Ok(StatusCode::NO_CONTENT)
 }
 async fn package_logs(
@@ -2011,7 +2164,8 @@ async fn put_settings(
     }
     fs::write(a.root.join("settings.toml"), toml::to_string_pretty(&s)?)?;
     *a.settings.lock().await = s.clone();
-    *a.led.settings.lock().await = s.led;
+    *a.led.settings.lock().await = s.led.clone();
+    refresh_logo_features(&mut *a.device.lock().await, &s.led);
     Ok(StatusCode::NO_CONTENT)
 }
 async fn led_set(State(a): State<App>, Json(f): Json<Frame>) -> Result<StatusCode, ApiError> {
@@ -2020,6 +2174,14 @@ async fn led_set(State(a): State<App>, Json(f): Json<Frame>) -> Result<StatusCod
 }
 async fn led_off(State(a): State<App>) -> Result<StatusCode, ApiError> {
     a.led.off().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn logo_set(State(a): State<App>, Json(f): Json<Frame>) -> Result<StatusCode, ApiError> {
+    a.led.draw_logo(f.colors).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn logo_off(State(a): State<App>) -> Result<StatusCode, ApiError> {
+    a.led.off_logo().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 #[derive(Debug)]
@@ -2068,6 +2230,7 @@ async fn main() -> Result<()> {
             .push(format!("led.ring.{}", settings.led.count));
         device.features.push("led.pattern.v1".into());
     }
+    refresh_logo_features(&mut device, &*led.settings.lock().await);
     tracing::info!(model=%device.model,features=?device.features,"detected device");
     let app = App {
         root: args.data_dir.clone(),
@@ -2122,7 +2285,9 @@ async fn main() -> Result<()> {
             .route("/api/sensors", get(get_sensors))
             .route("/api/clock", get(get_clock).put(put_clock))
             .route("/api/led", post(led_set))
-            .route("/api/led/off", post(led_off));
+            .route("/api/led/off", post(led_off))
+            .route("/api/led/logo", post(logo_set))
+            .route("/api/led/logo/off", post(logo_off));
     }
     let router = router.layer(TraceLayer::new_for_http()).with_state(app);
     let l = TcpListener::bind(&args.listen).await?;
@@ -2131,3 +2296,187 @@ async fn main() -> Result<()> {
     Ok(())
 }
 const UI: &str = include_str!("../web/index.html");
+
+#[cfg(test)]
+mod logo_tests {
+    use super::*;
+    struct Fixture {
+        root: PathBuf,
+        led: Led,
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("yam-logo-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            for zone in ["ring", "logo"] {
+                for i in 0..if zone == "logo" { 6 } else { 24 } {
+                    for channel in ["red", "green", "blue"] {
+                        let dir = root.join(format!("cucumber:{channel}:{zone}{i}"));
+                        fs::create_dir(&dir).unwrap();
+                        fs::write(dir.join("brightness"), "17").unwrap();
+                        fs::write(dir.join("trigger"), "none").unwrap();
+                    }
+                }
+            }
+            let mut settings = Settings::default().led;
+            settings.profile = "midi".into();
+            settings.count = 24;
+            settings.sysfs_root = root.to_string_lossy().into_owned();
+            let led = Led {
+                settings: Arc::new(Mutex::new(settings)),
+            };
+            Self { root, led }
+        }
+        fn read(&self, zone: &str, channel: &str, i: usize, attr: &str) -> String {
+            fs::read_to_string(
+                self.root
+                    .join(format!("cucumber:{channel}:{zone}{i}/{attr}")),
+            )
+            .unwrap()
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+    impl Fixture {
+        fn app(&self, source: &str, permissions: &[&str]) -> App {
+            let plugins_root = self.root.join("plugins");
+            let mut plugins = PluginManager::new(plugins_root.clone()).unwrap();
+            let package = plugins_root.join("logo-test");
+            fs::create_dir_all(&package).unwrap();
+            fs::write(package.join("main.lua"), source).unwrap();
+            fs::write(package.join("plugin.toml"), format!("id = \"logo-test\"\nname = \"Logo test\"\nversion = \"1\"\nentry = \"main.lua\"\npermissions = {:?}\n", permissions)).unwrap();
+            plugins.enabled.insert("logo-test".into());
+            App {
+                root: self.root.clone(),
+                settings: Arc::new(Mutex::new(Settings::default())),
+                device: Arc::new(Mutex::new(DeviceProfile {
+                    model: "yandexmidi".into(),
+                    architecture: "aarch64".into(),
+                    features: vec![],
+                    source: "test".into(),
+                })),
+                led: Arc::new(self.led.clone()),
+                plugins: Arc::new(Mutex::new(plugins)),
+            }
+        }
+    }
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lua_logo_api_is_permission_gated_and_keeps_ring_count() {
+        let f = Fixture::new();
+        let app = f.app("assert(alice.logo == nil); assert(device.led_count == 24); assert(device.logo_led_count == 6)", &[]);
+        run_plugin(
+            app,
+            "logo-test".into(),
+            "manual".into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        let app = f.app(
+            "alice.logo.set({'#123456','#123456','#123456','#123456','#123456','#123456'})",
+            &["led"],
+        );
+        run_plugin(
+            app.clone(),
+            "logo-test".into(),
+            "manual".into(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f.read("logo", "red", 0, "brightness"), "18");
+        assert_eq!(f.read("ring", "red", 0, "brightness"), "17");
+        assert!(run_plugin(
+            app,
+            "logo-test".into(),
+            "manual".into(),
+            Arc::new(AtomicBool::new(true))
+        )
+        .await
+        .is_err());
+    }
+    #[tokio::test]
+    async fn looping_logo_pattern_can_be_cancelled_during_a_long_frame() {
+        let f = Fixture::new();
+        let path = f.root.join("pattern.led");
+        fs::write(
+            &path,
+            "loop\n123456 123456 123456 123456 123456 123456 60000\n",
+        )
+        .unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
+        let worker = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            stop.store(true, Ordering::Relaxed);
+        });
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), f.led.play_logo(path, &cancelled))
+                .await
+                .unwrap();
+        assert!(result.unwrap_err().to_string().contains("stopped"));
+        worker.await.unwrap();
+    }
+    #[tokio::test]
+    async fn advertised_logo_features_follow_the_configured_adapter() {
+        let f = Fixture::new();
+        let mut settings = f.led.settings.lock().await.clone();
+        let mut device = DeviceProfile {
+            model: "yandexmidi".into(),
+            architecture: "aarch64".into(),
+            features: vec!["led.ring.rgb".into()],
+            source: "test".into(),
+        };
+        refresh_logo_features(&mut device, &settings);
+        assert!(device.features.iter().any(|f| f == "led.logo.rgb"));
+        settings.profile = "micro".into();
+        refresh_logo_features(&mut device, &settings);
+        assert_eq!(device.features, vec!["led.ring.rgb"]);
+    }
+    #[tokio::test]
+    async fn logo_frames_do_not_modify_the_ring() {
+        let f = Fixture::new();
+        f.led.draw_logo(vec!["#123456".into(); 6]).await.unwrap();
+        for i in 0..6 {
+            for (channel, expected) in [("red", "18"), ("green", "52"), ("blue", "86")] {
+                assert_eq!(f.read("logo", channel, i, "brightness"), expected);
+            }
+        }
+        assert_eq!(f.read("ring", "red", 0, "brightness"), "17");
+        f.led.off_logo().await.unwrap();
+        for i in 0..6 {
+            for channel in ["red", "green", "blue"] {
+                assert_eq!(f.read("logo", channel, i, "brightness"), "0");
+                assert_eq!(f.read("logo", channel, i, "trigger"), "ledfb-logo");
+            }
+        }
+        assert_eq!(f.read("ring", "red", 0, "trigger"), "none");
+    }
+    #[tokio::test]
+    async fn invalid_logo_frames_are_rejected_before_any_write() {
+        let f = Fixture::new();
+        assert!(f.led.draw_logo(vec!["#123456".into(); 5]).await.is_err());
+        let mut colors = vec!["#123456".into(); 6];
+        colors[5] = "#é0000".into();
+        assert!(f.led.draw_logo(colors).await.is_err());
+        assert_eq!(f.read("logo", "red", 0, "brightness"), "17");
+    }
+    #[tokio::test]
+    async fn logo_detection_requires_all_channels_and_midi_profile() {
+        let f = Fixture::new();
+        let mut settings = f.led.settings.lock().await.clone();
+        assert!(configured_rgb_logo(&settings));
+        settings.profile = "micro".into();
+        assert!(!configured_rgb_logo(&settings));
+        assert!(f.led.draw(vec!["#123456".into(); 24]).await.is_ok());
+        assert_eq!(f.read("logo", "red", 0, "brightness"), "17");
+        fs::remove_file(f.root.join("cucumber:blue:logo5/brightness")).unwrap();
+        settings.profile = "midi".into();
+        assert!(!configured_rgb_logo(&settings));
+        assert!(f.led.draw_logo(vec!["#ffffff".into(); 6]).await.is_err());
+        assert_eq!(f.read("logo", "red", 0, "brightness"), "17");
+    }
+}
