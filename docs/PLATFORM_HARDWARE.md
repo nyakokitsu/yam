@@ -8,12 +8,20 @@ YAM не линкуется с закрытым SDK колонок. Вместо
 | --- | --- | --- | --- |
 | RGB-кольцо Mini 2 / Micro | `yandexmini_2/.../yandex_mini2_led_controller.cpp`, `yandexmicro/.../yandex_micro_led_controller.cpp` | sysfs LED brightness | `led.ring.rgb` |
 | RGB-кольцо Midi | `cucumber:{red,green,blue}:ring0..23` | sysfs LED brightness | `led.ring.rgb` |
+| RGB-кольцо Mini 1 | `/system/vendor/quasar/led_util` | нативный проигрыватель `.led` | `led.ring.rgb` |
+| Системные паттерны Mini 1 | `/system/vendor/quasar/ledpatterns/*.led` | `alice.play_system` | `led.pattern.system` |
 | Сегментные часы | `yandexmini_2/.../yandex_mini2_clock_led_controller.cpp` | все 32 `*clock{A..G}{1..4}/brightness` или 45 `*white:clock-*` (Midi) в одном LED-профиле | `display.clock.segment.v1` |
 | Освещённость | `libs/brightness_control/light_sensor.cpp` | `iio:device*/in_intensity_input` | `sensor.ambient_light.iio` |
 | Температура | portable PowerManager и стандартный Linux hwmon | thermal-zone/hwmon sysfs | `sensor.temperature.sysfs` |
 | Батарея и заряд | `jbl_link/portable/power_manager/power_manager.cpp` | power_supply capacity/status sysfs | `battery.sysfs` |
 | Подсветка экрана | Android/TV platform конфигурации | `/sys/class/backlight` | `display.backlight` |
 | Кнопки | platform-specific ButtonsHandler | `/sys/class/input` и `/proc/bus/input/devices` | `input.evdev` |
+
+## Mini 1 (yandexmini)
+
+Mini 1 (`YandexStationMini_1C52`, Amlogic AXG) не публикует RGB-кольцо в `/sys/class/leds`: каталог существует, но пуст. Шестью сегментами управляет `/system/vendor/quasar/led_util`, который принимает путь к `.led` и работает до получения сигнала. YAM определяет такую колонку по hostname и наличию `led_util` с каталогом `ledpatterns`, а не по sysfs.
+
+Профиль `yandexmini` передаёт файл паттерна нативному проигрывателю, поэтому поддерживаются директивы `rotate`, `gradient` и `background`, которых нет в sysfs-парсере. `alice.play` берёт `.led` из пакета, `alice.play_system("note_1.led")` — штатный паттерн прошивки. Замена паттерна завершает предыдущий дочерний процесс, а `off()` запускает чёрный кадр и оставляет проигрыватель в известном выключенном состоянии. Пустой `/sys/class/leds` не должен включать capability `led.sysfs`.
 
 ## Не предоставляется намеренно
 

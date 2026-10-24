@@ -1,0 +1,14 @@
+id = "mini1-selftest"
+name = "Mini 1 LED selftest"
+version = "1.0.0"
+entry = "main.lua"
+description = "Exercises native Mini 1 LED colors, package patterns and system patterns"
+permissions = ["led"]
+
+[launch]
+kind = "lua"
+mode = "oneshot"
+
+[compatibility]
+models = ["yandexmini_1"]
+features = ["led.ring.rgb", "led.ring.6", "led.pattern.v1", "led.pattern.system"]

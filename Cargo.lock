@@ -2371,6 +2371,7 @@ dependencies = [
  "axum",
  "clap",
  "flate2",
+ "libc",
  "mlua",
  "reqwest",
  "serde",

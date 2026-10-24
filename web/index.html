@@ -29,7 +29,7 @@
   </section>
   <section>
     <h2>Настройки</h2>
-    <label>Профиль <select id="profile"><option>mini2</option><option>micro</option><option>midi</option><option>sysfs-ring</option><option>custom</option></select></label>
+    <label>Профиль <select id="profile" onchange="syncCount()"><option>mini2</option><option>micro</option><option>midi</option><option>yandexmini</option><option>sysfs-ring</option><option>custom</option></select></label>
     <label>LED count <input id="count" type="number" min="1" max="128"></label>
     <label><input id="binaries" type="checkbox"> Разрешить бинарники плагинов</label>
     <button onclick="saveSettings()">Сохранить</button>
@@ -65,6 +65,7 @@ upload.onsubmit = async event => {
   event.preventDefault();
   try { await request('/plugins', { method: 'POST', body: new FormData(upload) }); await load(); } catch (error) { alert(error.message); }
 };
+function syncCount() { const counts = { mini2: 6, micro: 3, midi: 24, yandexmini: 6 }; if (counts[profile.value]) count.value = counts[profile.value]; }
 function ringColors() { const list = colors.value.split(',').map(c => c.trim()).filter(Boolean); return list.length ? Array.from({ length: Number(count.value) || list.length }, (_, i) => list[i % list.length]) : list; }
 async function setLed() { try { await request('/led', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: ringColors() }) }); } catch (error) { alert(error.message); } }
 async function turnOff() { try { await request('/led/off', { method: 'POST' }); } catch (error) { alert(error.message); } }
