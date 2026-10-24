@@ -61,7 +61,7 @@ try {
     $downloads = @{}
     foreach ($name in @("yam-x86_64-pc-windows-msvc.exe", "yamd-aarch64-linux-musl")) {
         $download = Get-ReleaseAsset $name
-        $expected = ((Get-Content $checksums | Where-Object { $_ -match ("\\s" + [regex]::Escape($name) + "$") }) -split "\\s+")[0]
+        $expected = ((Get-Content $checksums | Where-Object { $_ -match ("\s" + [regex]::Escape($name) + "$") }) -split "\s+")[0]
         if (-not $expected) { throw "No SHA-256 checksum for $name" }
         $actual = (Get-FileHash -Algorithm SHA256 $download).Hash.ToLowerInvariant()
         if ($actual -ne $expected.ToLowerInvariant()) { throw "Checksum mismatch for $name" }
