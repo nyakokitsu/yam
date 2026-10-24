@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use reqwest::blocking::{multipart, Client};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -64,6 +64,9 @@ enum Command {
         command: ClockCommand,
     },
     Led {
+        /// LED zone; the logo is available on compatible Midi hardware.
+        #[arg(long, value_enum, default_value_t = LedZone::Ring)]
+        zone: LedZone,
         #[command(subcommand)]
         command: LedCommand,
     },
@@ -73,6 +76,20 @@ enum Command {
 enum RegistryCommand {
     List,
     Pull { id: String, version: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LedZone {
+    Ring,
+    Logo,
+}
+impl LedZone {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Ring => "/api/led",
+            Self::Logo => "/api/led/logo",
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -212,16 +229,18 @@ fn main() -> Result<()> {
                     .send()?,
             )?,
         },
-        Command::Led { command } => match command {
+        Command::Led { zone, command } => match command {
             LedCommand::Set { colors } => print_response(
                 client
-                    .post(endpoint(&cli.url, "/api/led"))
+                    .post(endpoint(&cli.url, zone.path()))
                     .json(&serde_json::json!({"colors":colors}))
                     .send()?,
             )?,
-            LedCommand::Off => {
-                print_response(client.post(endpoint(&cli.url, "/api/led/off")).send()?)?
-            }
+            LedCommand::Off => print_response(
+                client
+                    .post(endpoint(&cli.url, &format!("{}/off", zone.path())))
+                    .send()?,
+            )?,
         },
     }
     Ok(())

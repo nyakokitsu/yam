@@ -26,6 +26,12 @@
     <input id="colors" value="#4285F4,#EA4335,#FBBC05" size="40">
     <button onclick="setLed()">Показать</button>
     <button onclick="turnOff()">Выключить</button>
+    <div id="logoControls" hidden>
+      <h3>Логотип Midi · 6 LED</h3>
+      <label>Цвета логотипа <input id="logoColors" value="#181030" size="40"></label>
+      <button onclick="setLogo()">Показать логотип</button>
+      <button onclick="releaseLogo()">Вернуть логотип прошивке</button>
+    </div>
   </section>
   <section>
     <h2>Настройки</h2>
@@ -55,6 +61,7 @@ async function load() {
     plugins.innerHTML = pluginData.map(pluginRow).join('') || 'Пакетов нет';
     profile.value = settings.led.profile;
     count.value = settings.led.count;
+    logoControls.hidden = !currentDevice.features.includes('led.logo.rgb');
     binaries.checked = settings.allow_plugin_binaries;
   } catch (error) { alert(error.message); }
 }
@@ -68,8 +75,11 @@ upload.onsubmit = async event => {
 function ringColors() { const list = colors.value.split(',').map(c => c.trim()).filter(Boolean); return list.length ? Array.from({ length: Number(count.value) || list.length }, (_, i) => list[i % list.length]) : list; }
 async function setLed() { try { await request('/led', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: ringColors() }) }); } catch (error) { alert(error.message); } }
 async function turnOff() { try { await request('/led/off', { method: 'POST' }); } catch (error) { alert(error.message); } }
+function logoFrame() { const list = logoColors.value.split(',').map(c => c.trim()).filter(Boolean); return list.length ? Array.from({ length: 6 }, (_, i) => list[i % list.length]) : list; }
+async function setLogo() { try { await request('/led/logo', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ colors: logoFrame() }) }); } catch (error) { alert(error.message); } }
+async function releaseLogo() { try { await request('/led/logo/off', { method: 'POST' }); } catch (error) { alert(error.message); } }
 async function saveSettings() {
-  try { const settings = await request('/settings').then(r => r.json()); settings.led.profile = profile.value; settings.led.count = Number(count.value); settings.allow_plugin_binaries = binaries.checked; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); } catch (error) { alert(error.message); }
+  try { const settings = await request('/settings').then(r => r.json()); settings.led.profile = profile.value; settings.led.count = Number(count.value); settings.allow_plugin_binaries = binaries.checked; await request('/settings', { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(settings) }); await load(); } catch (error) { alert(error.message); }
 }
 load();
 </script>

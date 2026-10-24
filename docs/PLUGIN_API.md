@@ -43,7 +43,7 @@ tar -C package-source -czf my-package.yap plugin.toml main.lua assets/
 В Lua доступны `table`, `string`, `math` и `utf8`. Библиотеки `os`, `io`, `package` и debug недоступны. Сеть доступна только через permission-gated `alice.http`.
 
 - `event` содержит `manual` при запуске через Web UI.
-- `device.model`, `device.architecture`, `device.led_count` и `device.features` описывают колонку.
+- `device.model`, `device.architecture`, `device.led_count`, `device.logo_led_count` и `device.features` описывают колонку.
 - `alice` содержит только API, разрешённые permissions пакета.
 
 ## Permissions и API
@@ -51,6 +51,7 @@ tar -C package-source -czf my-package.yap plugin.toml main.lua assets/
 | Permission | API | Требование |
 | --- | --- | --- |
 | `led` | `alice.set(colors)`, `alice.off()`, `alice.play(path)`, `alice.sleep(ms)` | RGB LED-профиль |
+| `led` | `alice.logo.set(colors)`, `alice.logo.off()`, `alice.logo.play(path)` | `led.logo.rgb` |
 | `volume` | `alice.volume.set(percent)`, `alice.volume.get()` | `audio.volume.alsa` |
 | `audio` | `alice.audio.play(relative_path)` | `audio.play.aplay` |
 | `bluetooth` | `alice.bluetooth.status()`, `power(bool)`, `scan(bool)`, `pair(mac)`, `connect(mac)`, `disconnect(mac)`, `remove(mac)` | `bluetooth.bluez` |
@@ -66,6 +67,35 @@ tar -C package-source -czf my-package.yap plugin.toml main.lua assets/
 | `exec` | `alice.exec(program, args)` | runtime-настройка `allow_plugin_binaries = true` |
 
 `alice.set` принимает ровно `device.led_count` строк формата `#RRGGBB`. `alice.sleep` принимает 0–60000 мс и является точкой отмены анимации.
+
+### Логотип Midi
+
+Кольцо и центральный логотип — независимые зоны. `device.led_count` и `alice.set` сохраняют прежнее значение: 24 LED кольца у Midi. `device.logo_led_count` равен 6 при обнаружении полного Midi logo-адаптера, иначе 0. Возможности логотипа: `led.logo.rgb` и `led.logo.6`.
+
+```toml
+permissions = ["led"]
+
+[compatibility]
+features = ["led.logo.rgb", "led.logo.6"]
+```
+
+```lua
+local colors = {}
+for i = 1, device.logo_led_count do
+  colors[i] = "#181030"
+end
+alice.logo.set(colors)
+alice.sleep(1000)
+alice.logo.off()
+```
+
+`alice.logo.set` принимает ровно шесть RGB-строк; некорректный кадр отклоняется до начала записи. `alice.logo.play` читает тот же формат `.led`, что и `alice.play`, но кадр должен содержать шесть цветов. Пути ограничены каталогом пакета. Вызовы logo API и воспроизведение logo-паттернов проверяют отмену пакета.
+
+`alice.logo.off` возвращает каналам sysfs триггер `ledfb-logo`, передавая управление штатной службе. Кольцо не меняется. Остановка пакета освобождает обе доступные зоны. Штатная прошивка может перерисовать логотип во время ответа Алисы.
+
+HTTP: `POST /api/led/logo` с `{"colors":["#181030","#181030","#181030","#181030","#181030","#181030"]}` и `POST /api/led/logo/off`. Существующие `/api/led` и `/api/led/off` продолжают управлять кольцом.
+
+CLI: `yam led --zone logo set '#181030' '#181030' '#181030' '#181030' '#181030' '#181030'` и `yam led --zone logo off`. Без `--zone` выбирается кольцо.
 
 ### HTTP(S)
 
