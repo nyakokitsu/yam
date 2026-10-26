@@ -168,6 +168,9 @@ pub async fn speech(
         guard.next()
     })
     .await?;
+    // Stop/token rotation may have happened while the blocking poll was running.
+    // An old request must not return speech or mutate a new invocation's claim.
+    runtime_permission(&a, &id, &headers, "ipc.speech").await?;
     let event = match event {
         Ok(event) => event,
         Err(error) => {

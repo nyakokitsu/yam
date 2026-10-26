@@ -139,9 +139,18 @@ path = "fixture.sh"
         rejected(url+'/command/cancel',token,{'request_id':'new-request'}) # repeated final is not a second claim.
         conn.sendall(struct.pack('<i',-1));rejected(url+'/speech/next',token,{})
         # Stop invalidates token; no continuation of an earlier invocation.
+        before=len(speech_connections);poll_result=[]
+        def in_flight_poll():
+            try:request(url+'/speech/next',token,{});poll_result.append('stale success')
+            except urllib.error.HTTPError as error:poll_result.append(error.code)
+        pending=threading.Thread(target=in_flight_poll);pending.start()
+        for _ in range(30):
+            if len(speech_connections)>before:break
+            time.sleep(.01)
         req=urllib.request.Request(base+'/api/plugins/fixture/stop',data=b'{}',method='POST',headers={'Content-Type':'application/json'})
         with urllib.request.urlopen(req,timeout=3):pass
         time.sleep(.2);rejected(url+'/speech/next',token,{})
+        pending.join(timeout=3);assert poll_result and isinstance(poll_result[0],int),'in-flight poll outlived revoked runtime token'
     finally:
         daemon.terminate();daemon.wait(timeout=8);stop.set()
         for s in listeners.values():s.close()
