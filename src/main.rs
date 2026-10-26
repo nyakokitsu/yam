@@ -29,6 +29,8 @@ use tower_http::trace::TraceLayer;
 use url::Url;
 use uuid::Uuid;
 
+mod media;
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "0.0.0.0:8099")]
@@ -272,6 +274,9 @@ struct App {
     plugins: Arc<Mutex<PluginManager>>,
     runtime_tokens: Arc<Mutex<HashMap<String, String>>>,
     runtime_api_url: String,
+    speech_readers:
+        Arc<Mutex<HashMap<String, (String, Arc<std::sync::Mutex<media::SpeechReader>>)>>>,
+    speech_claims: Arc<Mutex<HashMap<String, (String, String, String, Instant, bool)>>>,
 }
 #[derive(Clone)]
 struct Led {
@@ -2567,6 +2572,8 @@ async fn run_binary(
     })
     .await?;
     app.runtime_tokens.lock().await.remove(&id);
+    app.speech_readers.lock().await.remove(&id);
+    app.speech_claims.lock().await.remove(&id);
     result
 }
 
@@ -3259,6 +3266,8 @@ async fn main() -> Result<()> {
             args.data_dir.join("plugins"),
         )?)),
         runtime_tokens: Arc::new(Mutex::new(HashMap::new())),
+        speech_readers: Arc::new(Mutex::new(HashMap::new())),
+        speech_claims: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: runtime_api_url(&args.listen)?,
     };
     start_auto_updater(app.clone(), std::env::current_exe()?, args.listen.clone());
@@ -3313,6 +3322,12 @@ async fn main() -> Result<()> {
             .route("/api/runtime/:id/sensors", get(runtime_sensors))
             .route("/api/runtime/:id/led", post(runtime_led))
             .route("/api/runtime/:id/led/off", post(runtime_led_off))
+            .route("/api/runtime/:id/speech/next", post(media::speech))
+            .route("/api/runtime/:id/media", get(media::capabilities))
+            .route(
+                "/api/runtime/:id/command/cancel",
+                post(media::cancel_command),
+            )
             .route("/api/runtime/:id/clock", post(runtime_clock))
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
