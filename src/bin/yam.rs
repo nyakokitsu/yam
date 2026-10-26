@@ -65,6 +65,13 @@ enum Command {
         command: RegistryCommand,
     },
     Device,
+    /// Read/set the device's user-assigned room, independently of hardware identity.
+    Room {
+        value: Option<String>,
+        /// Clear the assigned room.
+        #[arg(long, conflicts_with = "value")]
+        clear: bool,
+    },
     Sensors,
     Clock {
         #[command(subcommand)]
@@ -238,6 +245,18 @@ fn main() -> Result<()> {
             }
         }
         Command::Device => print_response(client.get(endpoint(&cli.url, "/api/device")).send()?)?,
+        Command::Room { value, clear } => {
+            if value.is_some() || clear {
+                print_response(
+                    client
+                        .put(endpoint(&cli.url, "/api/room"))
+                        .json(&serde_json::json!({"room": value}))
+                        .send()?,
+                )?;
+            } else {
+                print_response(client.get(endpoint(&cli.url, "/api/room")).send()?)?;
+            }
+        }
         Command::Sensors => print_response(client.get(endpoint(&cli.url, "/api/sensors")).send()?)?,
         Command::Clock { command } => match command {
             ClockCommand::Status => {

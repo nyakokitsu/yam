@@ -2,6 +2,13 @@
 
 Lua-пакет получает `alice`, `device` и `event`. Укажите минимальный список `permissions` в `plugin.toml`; API без разрешения недоступен.
 
+`device.room` — общая комната колонки (строка либо `nil`), заданная пользователем
+в YAM, не в конкретном пакете. Binary runtime `GET /device` и management
+`GET /api/device` возвращают то же поле `room` (либо JSON `null`). Для настройки:
+интерфейс «Комната», `yam room "Кухня"`, `GET/PUT /api/room`.
+[Схема, хранение и совместимость](ROOMS.md). Комната не меняет аппаратную модель
+и capabilities. Снимок Lua обновляется при следующем запуске пакета.
+
 | Permission | API |
 | --- | --- |
 | `led` | `alice.set(colors)`, `off()`, `play(path)`, `logo.set(colors)`, `logo.off()` |

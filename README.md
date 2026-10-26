@@ -20,5 +20,6 @@ irm https://hackalice.me/install.ps1 | iex
 - [Установка и эксплуатация](docs/DEPLOYMENT.md)
 - [Пакеты и CLI](docs/PACKAGES.md)
 - [Lua API плагинов](docs/PLUGIN_API.md)
+- [Комната колонки: интерфейс, CLI и общий API](docs/ROOMS.md)
 
 Примеры [`examples/`](examples/).

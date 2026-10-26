@@ -29,6 +29,9 @@ use tower_http::trace::TraceLayer;
 use url::Url;
 use uuid::Uuid;
 
+mod rooms;
+use rooms::Room;
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, default_value = "0.0.0.0:8099")]
@@ -223,6 +226,13 @@ struct DeviceProfile {
     features: Vec<String>,
     source: String,
 }
+
+#[derive(Serialize)]
+struct DeviceInfo {
+    #[serde(flatten)]
+    profile: DeviceProfile,
+    room: Option<String>,
+}
 #[derive(Debug, Clone)]
 struct Sensor {
     id: String,
@@ -268,6 +278,7 @@ struct App {
     root: PathBuf,
     settings: Arc<Mutex<Settings>>,
     device: Arc<Mutex<DeviceProfile>>,
+    room: Arc<Mutex<Room>>,
     led: Arc<Led>,
     plugins: Arc<Mutex<PluginManager>>,
     runtime_tokens: Arc<Mutex<HashMap<String, String>>>,
@@ -688,6 +699,25 @@ fn compatibility_error(m: &Manifest, d: &DeviceProfile) -> Option<String> {
         Some(format!("missing feature(s): {}", missing.join(", ")))
     }
 }
+fn model_from_text(text: &str) -> Option<&'static str> {
+    let text = text.to_lowercase();
+    // Station2 uses station-midi in DT; the commercial Midi is cucumber.
+    const MODELS: [(&str, &str); 8] = [
+        ("yandexmicro", "yandexmicro"),
+        ("yandex,cucumber", "yandexmidi"),
+        ("yandex,station-midi", "yandexstation_2"),
+        ("yandex,plum", "yandexplum"),
+        ("yandexmini_2", "yandexmini_2"),
+        ("station-mini2", "yandexmini_2"),
+        ("yandexstation_2", "yandexstation_2"),
+        ("yandexmini", "yandexmini"),
+    ];
+    MODELS
+        .iter()
+        .find(|(needle, _)| text.contains(needle))
+        .map(|(_, model)| *model)
+}
+
 fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if let Ok(raw) = fs::read_to_string(root.join("device.toml")) {
         if let Ok(p) = toml::from_str::<DeviceProfile>(&raw) {
@@ -705,17 +735,7 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     .collect::<Vec<_>>()
     .join(" ")
     .to_lowercase();
-    // Ring layout is the most reliable signal; device-tree strings cover the rest.
-    // Mini 2 reports `yandex,station-mini2` in its device-tree compatible list.
-    const TEXT_MODELS: [(&str, &str); 7] = [
-        ("yandexmicro", "yandexmicro"),
-        ("yandex,cucumber", "yandexmidi"),
-        ("yandex,plum", "yandexplum"),
-        ("yandexmini_2", "yandexmini_2"),
-        ("station-mini2", "yandexmini_2"),
-        ("yandexstation_2", "yandexstation_2"),
-        ("yandexmini", "yandexmini"),
-    ];
+    // Ring layout is the most reliable signal; verified DT aliases cover the rest.
     let model = forced.unwrap_or_else(|| {
         let by_leds = detect_led_profile(&default_led_root()).map(|(profile, _)| match profile {
             "micro" => "yandexmicro",
@@ -724,12 +744,7 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             _ => "yandexmini_2",
         });
         by_leds
-            .or_else(|| {
-                TEXT_MODELS
-                    .iter()
-                    .find(|(needle, _)| text.contains(needle))
-                    .map(|(_, model)| *model)
-            })
+            .or_else(|| model_from_text(&text))
             .unwrap_or("unknown")
             .into()
     });
@@ -1906,6 +1921,7 @@ fn configured_rgb_ring(settings: &LedSettings) -> bool {
 
 async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBool>) -> Result<()> {
     let device = app.device.lock().await.clone();
+    let room = app.room.lock().await.room.clone();
     let led_count = app.led.settings.lock().await.count;
     let (manifest, root, allowed) = {
         let p = app.plugins.lock().await;
@@ -2462,6 +2478,7 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         let lua_device = lua.create_table()?;
         lua_device.set("model", device.model)?;
         lua_device.set("architecture", device.architecture)?;
+        lua_device.set("room", room)?;
         lua_device.set("led_count", led_count)?;
         let lua_features = lua.create_table()?;
         for (i, feature) in device.features.iter().enumerate() {
@@ -2965,9 +2982,9 @@ async fn runtime_device(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
     headers: HeaderMap,
-) -> Result<Json<DeviceProfile>, ApiError> {
+) -> Result<Json<DeviceInfo>, ApiError> {
     runtime_permission(&a, &id, &headers, "exec").await?;
-    Ok(Json(a.device.lock().await.clone()))
+    Ok(Json(device_info(&a).await))
 }
 async fn runtime_sensors(
     State(a): State<App>,
@@ -3008,8 +3025,23 @@ async fn runtime_clock(
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
 }
-async fn get_device(State(a): State<App>) -> Json<DeviceProfile> {
-    Json(a.device.lock().await.clone())
+async fn device_info(a: &App) -> DeviceInfo {
+    let profile = a.device.lock().await.clone();
+    let room = a.room.lock().await.room.clone();
+    DeviceInfo { profile, room }
+}
+async fn get_device(State(a): State<App>) -> Json<DeviceInfo> {
+    Json(device_info(&a).await)
+}
+async fn get_room(State(a): State<App>) -> Json<Room> {
+    Json(a.room.lock().await.clone())
+}
+async fn put_room(State(a): State<App>, Json(request): Json<Room>) -> Result<Json<Room>, ApiError> {
+    let normalized = request.normalized()?;
+    let mut room = a.room.lock().await;
+    normalized.save(&a.root)?;
+    *room = normalized.clone();
+    Ok(Json(normalized))
 }
 async fn get_sensors() -> Json<Vec<SensorInfo>> {
     Json(
@@ -3254,6 +3286,7 @@ async fn main() -> Result<()> {
         root: args.data_dir.clone(),
         settings: Arc::new(Mutex::new(settings)),
         device: Arc::new(Mutex::new(device)),
+        room: Arc::new(Mutex::new(Room::load(&args.data_dir)?)),
         led,
         plugins: Arc::new(Mutex::new(PluginManager::new(
             args.data_dir.join("plugins"),
@@ -3316,6 +3349,7 @@ async fn main() -> Result<()> {
             .route("/api/runtime/:id/clock", post(runtime_clock))
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
+            .route("/api/room", get(get_room).put(put_room))
             .route("/api/sensors", get(get_sensors))
             .route("/api/clock", get(get_clock).put(put_clock))
             .route("/api/led", post(led_set))
@@ -3329,6 +3363,42 @@ async fn main() -> Result<()> {
     tracing::info!("web UI: http://{}", args.listen);
     axum::serve(l, router).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod device_room_tests {
+    use super::*;
+
+    #[test]
+    fn station2_dt_alias_is_not_commercial_midi() {
+        assert_eq!(
+            model_from_text("Yandex Station Midi\0yandex,station-midi amlogic, axg"),
+            Some("yandexstation_2")
+        );
+        assert_eq!(model_from_text("yandex,cucumber"), Some("yandexmidi"));
+        assert_eq!(
+            model_from_text("yandex,station-mini2"),
+            Some("yandexmini_2")
+        );
+        assert_eq!(model_from_text("unsupported future hardware"), None);
+    }
+
+    #[test]
+    fn global_room_is_additive_not_a_hardware_override() {
+        let info = DeviceInfo {
+            profile: DeviceProfile {
+                model: "unknown".into(),
+                architecture: "aarch64".into(),
+                features: vec!["plugin.yap.v1".into()],
+                source: "auto".into(),
+            },
+            room: Some("Кухня".into()),
+        };
+        let value = serde_json::to_value(info).unwrap();
+        assert_eq!(value["model"], "unknown");
+        assert_eq!(value["room"], "Кухня");
+        assert_eq!(value["features"], serde_json::json!(["plugin.yap.v1"]));
+    }
 }
 const UI: &str = include_str!("../web/index.html");
 
