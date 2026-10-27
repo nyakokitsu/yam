@@ -51,7 +51,7 @@ enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Open an interactive ADB terminal for an enabled binary oneshot package.
+    /// Open an interactive ADB terminal for an enabled binary package.
     Tui {
         id: String,
         #[arg(last = true)]
@@ -191,7 +191,7 @@ fn main() -> Result<()> {
         Command::Enable { id } => set_enabled(&client, &cli.url, &id, true)?,
         Command::Disable { id } => set_enabled(&client, &cli.url, &id, false)?,
         Command::Run { id, args } => {
-            ensure_package_kind(&client, &cli.url, &id, "binary", "oneshot")?;
+            ensure_binary_enabled(&client, &cli.url, &id)?;
             let log_offset = package_logs(&client, &cli.url, &id)?.len();
             print_response(
                 client
@@ -309,9 +309,6 @@ fn open_tui(client: &Client, url: &str, id: &str, args: &[String]) -> Result<()>
         .context("package not found")?;
     if package["manifest"]["launch"]["kind"] != "binary" {
         bail!("TUI is available only for binary packages")
-    }
-    if package["manifest"]["launch"]["mode"] != "oneshot" {
-        bail!("TUI is available only for oneshot packages")
     }
     if package["enabled"] != true {
         bail!("package is disabled")
@@ -517,12 +514,10 @@ fn package(client: &Client, url: &str, id: &str) -> Result<Value> {
         .context("package not found")
 }
 
-fn ensure_package_kind(client: &Client, url: &str, id: &str, kind: &str, mode: &str) -> Result<()> {
+fn ensure_binary_enabled(client: &Client, url: &str, id: &str) -> Result<()> {
     let package = package(client, url, id)?;
-    if package["manifest"]["launch"]["kind"] != kind
-        || package["manifest"]["launch"]["mode"] != mode
-    {
-        bail!("{id} is not a {kind} {mode} package")
+    if package["manifest"]["launch"]["kind"] != "binary" {
+        bail!("{id} is not a binary package")
     }
     if package["enabled"] != true {
         bail!("{id} is disabled; enable it first with yam enable {id}")
@@ -537,21 +532,21 @@ fn service_command(client: &Client, url: &str, command: ServiceCommand) -> Resul
             print_packages(&packages, true);
         }
         ServiceCommand::Enable { id } => {
-            let was_enabled = package(client, url, &id)?["enabled"] == true;
             ensure_service(client, url, &id, false)?;
-            set_enabled(client, url, &id, true)?;
-            if was_enabled {
-                print_response(
-                    client
-                        .post(endpoint(url, &format!("/api/plugins/{id}/service/start")))
-                        .send()?,
-                )?;
-            }
+            print_response(
+                client
+                    .post(endpoint(url, &format!("/api/plugins/{id}/service/enable")))
+                    .send()?,
+            )?;
             println!("Service {id} is enabled and running.");
         }
         ServiceCommand::Disable { id } => {
             ensure_service(client, url, &id, false)?;
-            set_enabled(client, url, &id, false)?;
+            print_response(
+                client
+                    .post(endpoint(url, &format!("/api/plugins/{id}/service/disable")))
+                    .send()?,
+            )?;
             println!("Service {id} is disabled.");
         }
         ServiceCommand::Start { id } => {
@@ -600,9 +595,6 @@ fn service_command(client: &Client, url: &str, command: ServiceCommand) -> Resul
 
 fn ensure_service(client: &Client, url: &str, id: &str, must_be_enabled: bool) -> Result<()> {
     let package = package(client, url, id)?;
-    if package["manifest"]["launch"]["mode"] != "service" {
-        bail!("{id} is a oneshot package; run it with yam run {id}")
-    }
     if must_be_enabled && package["enabled"] != true {
         bail!("{id} is disabled; enable it first with yam service enable {id}")
     }
@@ -613,11 +605,11 @@ fn print_packages(packages: &Value, services_only: bool) {
     let Some(packages) = packages.as_array() else {
         return;
     };
-    println!("ID\tVERSION\tTYPE\tMODE\tSTATE");
+    println!("ID\tVERSION\tTYPE\tAUTOSTART\tSTATE");
     for package in packages {
         let manifest = &package["manifest"];
-        let mode = manifest["launch"]["mode"].as_str().unwrap_or("oneshot");
-        if services_only && mode != "service" {
+        let autostart = package["service_enabled"] == true;
+        if services_only && !autostart && package["running"] != true {
             continue;
         }
         let state = if package["running"] == true {
@@ -632,7 +624,7 @@ fn print_packages(packages: &Value, services_only: bool) {
             manifest["id"].as_str().unwrap_or("?"),
             manifest["version"].as_str().unwrap_or("?"),
             manifest["launch"]["kind"].as_str().unwrap_or("lua"),
-            mode,
+            if autostart { "yes" } else { "no" },
             state
         );
     }

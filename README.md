@@ -1,3 +1,4 @@
+### UNDER CONSTRUCTION! МЫ В ПРОЦЕССЕ ОБНОВЛЕНИЯ!
 # YAM
 
 yam = Y Application Manager. Ставьте на свою колонку .yap.

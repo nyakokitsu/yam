@@ -269,6 +269,7 @@ struct PluginInfo {
     /// Absolute package directory on the speaker, used by `yam tui`.
     directory: PathBuf,
     enabled: bool,
+    service_enabled: bool,
     running: bool,
     compatible: bool,
     incompatibility: Option<String>,
@@ -448,6 +449,7 @@ fn parse_pattern(s: &str) -> Result<(bool, Vec<Frame>)> {
 struct PluginManager {
     root: PathBuf,
     enabled: HashSet<String>,
+    service_enabled: HashSet<String>,
     running: HashMap<String, Arc<AtomicBool>>,
 }
 impl PluginManager {
@@ -460,9 +462,35 @@ impl PluginManager {
             }),
             Err(_) => HashSet::new(),
         };
+        let service_path = root.join("services.json");
+        let service_enabled = match fs::read_to_string(&service_path) {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|error| {
+                tracing::warn!(%error, "services.json is corrupt; no packages auto-start");
+                HashSet::new()
+            }),
+            Err(_) => {
+                // Migrate old mode-based services exactly once when no explicit
+                // service state exists yet.
+                let legacy = fs::read_dir(&root)?
+                    .filter_map(|entry| entry.ok())
+                    .filter_map(|entry| {
+                        let manifest = fs::read_to_string(entry.path().join("plugin.toml")).ok()?;
+                        let manifest = toml::from_str::<Manifest>(&manifest).ok()?;
+                        (enabled.contains(&manifest.id)
+                            && manifest.launch.mode == LaunchMode::Service)
+                            .then_some(manifest.id)
+                    })
+                    .collect::<HashSet<_>>();
+                if !legacy.is_empty() {
+                    write_atomic(&service_path, &serde_json::to_vec_pretty(&legacy)?)?;
+                }
+                legacy
+            }
+        };
         Ok(Self {
             root,
             enabled,
+            service_enabled,
             running: HashMap::new(),
         })
     }
@@ -470,6 +498,10 @@ impl PluginManager {
         write_atomic(
             &self.root.join("enabled.json"),
             &serde_json::to_vec_pretty(&self.enabled)?,
+        )?;
+        write_atomic(
+            &self.root.join("services.json"),
+            &serde_json::to_vec_pretty(&self.service_enabled)?,
         )
     }
     fn list(&self, device: &DeviceProfile) -> Result<Vec<PluginInfo>> {
@@ -486,6 +518,7 @@ impl PluginManager {
                     out.push(PluginInfo {
                         directory: e.path(),
                         enabled: self.enabled.contains(&manifest.id),
+                        service_enabled: self.service_enabled.contains(&manifest.id),
                         running: self.running.contains_key(&manifest.id),
                         compatible: reason.is_none(),
                         incompatibility: reason,
@@ -574,6 +607,7 @@ impl PluginManager {
         }
         fs::remove_dir_all(p)?;
         self.enabled.remove(id);
+        self.service_enabled.remove(id);
         self.save()
     }
 }
@@ -699,28 +733,38 @@ fn compatibility_error(m: &Manifest, d: &DeviceProfile) -> Option<String> {
         Some(format!("missing feature(s): {}", missing.join(", ")))
     }
 }
-fn model_from_text(text: &str) -> Option<&'static str> {
-    let text = text.to_lowercase();
-    // Station2 uses station-midi in DT; the commercial Midi is cucumber.
+/// Converts model identifiers from device-tree, CLI and package manifests into
+/// YAM's stable package-facing form (for example, `yandexmicro`).
+fn recognized_model(value: &str) -> Option<&'static str> {
+    let normalized = value
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
     const MODELS: [(&str, &str); 8] = [
         ("yandexmicro", "yandexmicro"),
-        ("yandex,cucumber", "yandexmidi"),
-        ("yandex,station-midi", "yandexstation_2"),
-        ("yandex,plum", "yandexplum"),
-        ("yandexmini_2", "yandexmini_2"),
-        ("station-mini2", "yandexmini_2"),
-        ("yandexstation_2", "yandexstation_2"),
+        ("yandexcucumber", "yandexmidi"),
+        ("yandexstationmidi", "yandexstation_2"),
+        ("yandexplum", "yandexplum"),
+        ("yandexmini2", "yandexmini_2"),
+        ("stationmini2", "yandexmini_2"),
+        ("yandexstation2", "yandexstation_2"),
         ("yandexmini", "yandexmini"),
     ];
     MODELS
         .iter()
-        .find(|(needle, _)| text.contains(needle))
+        .find(|(needle, _)| normalized.contains(needle))
         .map(|(_, model)| *model)
 }
-
+fn canonical_model(value: &str) -> String {
+    recognized_model(value)
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.trim().to_ascii_lowercase())
+}
 fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     if let Ok(raw) = fs::read_to_string(root.join("device.toml")) {
-        if let Ok(p) = toml::from_str::<DeviceProfile>(&raw) {
+        if let Ok(mut p) = toml::from_str::<DeviceProfile>(&raw) {
+            p.model = canonical_model(&p.model);
             return p;
         }
     }
@@ -735,7 +779,8 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
     .collect::<Vec<_>>()
     .join(" ")
     .to_lowercase();
-    // Ring layout is the most reliable signal; verified DT aliases cover the rest.
+    // Ring layout is the most reliable signal; device-tree strings cover the rest.
+    // Mini 2 reports `yandex,station-mini2` in its device-tree compatible list.
     let model = forced.unwrap_or_else(|| {
         let by_leds = detect_led_profile(&default_led_root()).map(|(profile, _)| match profile {
             "micro" => "yandexmicro",
@@ -744,10 +789,11 @@ fn detect_device(root: &Path, forced: Option<String>) -> DeviceProfile {
             _ => "yandexmini_2",
         });
         by_leds
-            .or_else(|| model_from_text(&text))
+            .or_else(|| recognized_model(&text))
             .unwrap_or("unknown")
             .into()
     });
+    let model = canonical_model(&model);
     // LED ring features depend on the configured profile and are added in `main`.
     let mut features = vec!["runtime.lua.v1".into(), "plugin.yap.v1".into()];
     if command_exists("amixer") {
@@ -1918,6 +1964,41 @@ fn configured_rgb_ring(settings: &LedSettings) -> bool {
         .iter()
         .all(|channel| led_brightness_path(settings, channel, 0).is_ok_and(|p| p.exists()))
 }
+/// Returns whether the named speaker API is usable on this device. This is a
+/// capability probe, not a permission check: an unavailable API returns false,
+/// while an API omitted from a package's manifest remains inaccessible.
+fn lua_api_available(device: &DeviceProfile, name: &str) -> Result<bool> {
+    let has_feature = |feature: &str| device.features.iter().any(|value| value == feature);
+    let quasar_has = |service: &str| {
+        fs::read_to_string(QUASAR_CONFIG)
+            .ok()
+            .and_then(|config| quasar_service_port(&config, service).ok().flatten())
+            .is_some()
+    };
+    Ok(match name {
+        "led" => device
+            .features
+            .iter()
+            .any(|feature| feature.starts_with("led.")),
+        "volume" => has_feature("audio.volume.alsa"),
+        "audio" => has_feature("audio.play.aplay"),
+        "bluetooth" => has_feature("bluetooth.bluez"),
+        "display" => has_feature("display.backlight"),
+        "sensors" => device
+            .features
+            .iter()
+            .any(|feature| feature.starts_with("sensor.")),
+        "sensors.control" => has_feature("sensor.ambient_light.iio"),
+        "clock" => has_feature("display.clock.segment.v1"),
+        "input" => has_feature("input.evdev"),
+        "network" | "system" => true,
+        "ipc.alarm" => quasar_has("alarmd"),
+        "ipc.speech" | "commands" => quasar_has("aliced"),
+        "ipc.read" | "ipc.control" => Path::new(QUASAR_CONFIG).is_file(),
+        "exec" => bail!("exec has no is_available probe"),
+        _ => bail!("unknown speaker API {name:?}"),
+    })
+}
 
 async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBool>) -> Result<()> {
     let device = app.device.lock().await.clone();
@@ -1947,6 +2028,18 @@ async fn run_plugin(app: App, id: String, event: String, cancelled: Arc<AtomicBo
         let globals = lua.globals();
         let api = lua.create_table()?;
         let permissions: HashSet<_> = manifest.permissions.iter().map(String::as_str).collect();
+        let available_device = device.clone();
+        api.set(
+            "is_available",
+            lua.create_function(move |_, name: String| {
+                lua_api_available(&available_device, &name).map_err(mlua::Error::external)
+            })?,
+        )?;
+        let model = device.model.clone();
+        api.set(
+            "model",
+            lua.create_function(move |_, ()| Ok(model.clone()))?,
+        )?;
         let cancelled_sleep = cancelled.clone();
         api.set(
             "sleep",
@@ -2706,24 +2799,13 @@ async fn run_package(
     }
 }
 
-async fn start_package(
-    app: App,
-    id: String,
-    invocation_args: Vec<String>,
-    expected_mode: Option<LaunchMode>,
-) -> Result<()> {
+async fn start_package(app: App, id: String, invocation_args: Vec<String>) -> Result<()> {
     let cancelled = {
         let mut plugins = app.plugins.lock().await;
         if !plugins.enabled.contains(&id) {
             bail!("package is disabled")
         }
         let manifest = plugins.manifest(&id)?;
-        if expected_mode
-            .as_ref()
-            .is_some_and(|mode| manifest.launch.mode != *mode)
-        {
-            bail!("package launch mode does not support this command")
-        }
         if manifest.launch.kind == LaunchKind::Binary
             && !app.settings.lock().await.allow_plugin_binaries
         {
@@ -2732,9 +2814,6 @@ async fn start_package(
         if !invocation_args.is_empty() {
             if manifest.launch.kind != LaunchKind::Binary {
                 bail!("only binary packages accept invocation arguments")
-            }
-            if manifest.launch.mode != LaunchMode::Oneshot {
-                bail!("invocation arguments are only supported for oneshot packages")
             }
         }
         if let Some(previous) = plugins.running.remove(&id) {
@@ -2800,8 +2879,14 @@ async fn install_registry(
     State(a): State<App>,
     Json(request): Json<RegistryInstall>,
 ) -> Result<Json<Manifest>, ApiError> {
+    let device = a.device.lock().await.clone();
     let package = task::spawn_blocking(move || {
-        download_registry_package(&request.registry, &request.id, request.version.as_deref())
+        download_registry_package(
+            &request.registry,
+            &request.id,
+            request.version.as_deref(),
+            &device,
+        )
     })
     .await
     .context("registry download task failed")??;
@@ -2809,7 +2894,12 @@ async fn install_registry(
     Ok(Json(manifest))
 }
 
-fn download_registry_package(registry: &str, id: &str, version: Option<&str>) -> Result<Vec<u8>> {
+fn download_registry_package(
+    registry: &str,
+    id: &str,
+    version: Option<&str>,
+    device: &DeviceProfile,
+) -> Result<Vec<u8>> {
     let index_url = if registry.trim_end_matches('/').ends_with("index.json") {
         registry.to_string()
     } else {
@@ -2823,21 +2913,26 @@ fn download_registry_package(registry: &str, id: &str, version: Option<&str>) ->
     let packages = index["packages"]
         .as_array()
         .context("invalid registry package index")?;
-    let entry = match version {
-        Some(version) => packages
-            .iter()
-            .find(|entry| entry["id"] == id && entry["version"] == version),
-        None => packages
-            .iter()
-            .filter(|entry| entry["id"] == id)
-            .max_by(|left, right| {
-                registry_version(
-                    left["version"].as_str().unwrap_or(""),
-                    right["version"].as_str().unwrap_or(""),
-                )
-            }),
-    }
-    .context("package version not found in registry")?;
+    let entry = packages
+        .iter()
+        .filter(|entry| entry["id"] == id)
+        .filter(|entry| version.is_none_or(|version| entry["version"] == version))
+        .filter(|entry| registry_compatible(entry, device))
+        .max_by(|left, right| {
+            registry_version(
+                left["version"].as_str().unwrap_or(""),
+                right["version"].as_str().unwrap_or(""),
+            )
+            .then_with(|| {
+                registry_target_rank(left, device).cmp(&registry_target_rank(right, device))
+            })
+        })
+        .with_context(|| {
+            format!(
+                "no package build for {} matches device {}",
+                id, device.model
+            )
+        })?;
     let package_url = entry["url"]
         .as_str()
         .context("registry entry has no package URL")?;
@@ -2857,6 +2952,25 @@ fn download_registry_package(registry: &str, id: &str, version: Option<&str>) ->
         bail!("package checksum mismatch")
     }
     Ok(package)
+}
+fn registry_values<'a>(entry: &'a serde_json::Value, key: &str) -> Vec<&'a str> {
+    entry[key]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect()
+}
+fn registry_compatible(entry: &serde_json::Value, device: &DeviceProfile) -> bool {
+    let models = registry_values(entry, "models");
+    let features = registry_values(entry, "features");
+    (models.is_empty() || models.contains(&device.model.as_str()))
+        && features
+            .iter()
+            .all(|feature| device.features.iter().any(|available| available == feature))
+}
+fn registry_target_rank(entry: &serde_json::Value, device: &DeviceProfile) -> u8 {
+    u8::from(registry_values(entry, "models").contains(&device.model.as_str()))
 }
 
 fn registry_version(left: &str, right: &str) -> std::cmp::Ordering {
@@ -2887,19 +3001,16 @@ async fn toggle(
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
     let mut p = a.plugins.lock().await;
-    let manifest = p.manifest(&id)?;
     let enabled = p.enabled.insert(id.clone());
     if !enabled {
         p.enabled.remove(&id);
+        p.service_enabled.remove(&id);
         if let Some(token) = p.running.remove(&id) {
             token.store(true, Ordering::Relaxed);
         }
     }
     p.save()?;
     drop(p);
-    if enabled && manifest.launch.mode == LaunchMode::Service {
-        start_package(a, id, Vec::new(), Some(LaunchMode::Service)).await?;
-    }
     Ok(StatusCode::NO_CONTENT)
 }
 async fn remove(
@@ -2918,7 +3029,6 @@ async fn invoke(
         a,
         id,
         invocation.map(|value| value.0.args).unwrap_or_default(),
-        Some(LaunchMode::Oneshot),
     )
     .await?;
     Ok(StatusCode::ACCEPTED)
@@ -2927,8 +3037,35 @@ async fn start_service(
     State(a): State<App>,
     AxumPath(id): AxumPath<String>,
 ) -> Result<StatusCode, ApiError> {
-    start_package(a, id, Vec::new(), Some(LaunchMode::Service)).await?;
+    start_package(a, id, Vec::new()).await?;
     Ok(StatusCode::ACCEPTED)
+}
+async fn enable_service(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    {
+        let mut plugins = a.plugins.lock().await;
+        plugins.manifest(&id)?;
+        plugins.enabled.insert(id.clone());
+        plugins.service_enabled.insert(id.clone());
+        plugins.save()?;
+    }
+    start_package(a, id, Vec::new()).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+async fn disable_service(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let mut plugins = a.plugins.lock().await;
+    plugins.manifest(&id)?;
+    plugins.service_enabled.remove(&id);
+    if let Some(token) = plugins.running.remove(&id) {
+        token.store(true, Ordering::Relaxed);
+    }
+    plugins.save()?;
+    Ok(StatusCode::NO_CONTENT)
 }
 async fn stop_plugin(
     State(a): State<App>,
@@ -3302,21 +3439,12 @@ async fn main() -> Result<()> {
             .await
             .list(&device)?
             .into_iter()
-            .filter(|package| {
-                package.enabled && package.manifest.launch.mode == LaunchMode::Service
-            })
+            .filter(|package| package.enabled && package.service_enabled)
             .map(|package| package.manifest.id)
             .collect::<Vec<_>>()
     };
     for id in services {
-        if let Err(error) = start_package(
-            app.clone(),
-            id.clone(),
-            Vec::new(),
-            Some(LaunchMode::Service),
-        )
-        .await
-        {
+        if let Err(error) = start_package(app.clone(), id.clone(), Vec::new()).await {
             tracing::error!(package = %id, %error, "service package failed to start");
         }
     }
@@ -3339,6 +3467,8 @@ async fn main() -> Result<()> {
             .route("/api/plugins/:id", delete(remove))
             .route("/api/plugins/:id/toggle", post(toggle))
             .route("/api/plugins/:id/invoke", post(invoke))
+            .route("/api/plugins/:id/service/enable", post(enable_service))
+            .route("/api/plugins/:id/service/disable", post(disable_service))
             .route("/api/plugins/:id/service/start", post(start_service))
             .route("/api/plugins/:id/stop", post(stop_plugin))
             .route("/api/plugins/:id/logs", get(package_logs))
@@ -3372,15 +3502,15 @@ mod device_room_tests {
     #[test]
     fn station2_dt_alias_is_not_commercial_midi() {
         assert_eq!(
-            model_from_text("Yandex Station Midi\0yandex,station-midi amlogic, axg"),
+            recognized_model("Yandex Station Midi\0yandex,station-midi amlogic, axg"),
             Some("yandexstation_2")
         );
-        assert_eq!(model_from_text("yandex,cucumber"), Some("yandexmidi"));
+        assert_eq!(recognized_model("yandex,cucumber"), Some("yandexmidi"));
         assert_eq!(
-            model_from_text("yandex,station-mini2"),
+            recognized_model("yandex,station-mini2"),
             Some("yandexmini_2")
         );
-        assert_eq!(model_from_text("unsupported future hardware"), None);
+        assert_eq!(recognized_model("unsupported future hardware"), None);
     }
 
     #[test]
@@ -3459,6 +3589,27 @@ mod tests {
         assert!(command_matches("ананас", "Алиса, ананас!"));
         assert!(command_matches("ананас", "ананас"));
         assert!(!command_matches("ананас", "алиса банан"));
+    }
+
+    #[test]
+    fn model_names_are_normalized_for_package_compatibility() {
+        assert_eq!(canonical_model("Yandex Micro"), "yandexmicro");
+        assert_eq!(canonical_model("yandex,micro"), "yandexmicro");
+        assert_eq!(canonical_model("yandex,station-mini2"), "yandexmini_2");
+    }
+
+    #[test]
+    fn availability_reports_device_capabilities_but_not_exec() {
+        let device = DeviceProfile {
+            model: "yandexmicro".into(),
+            architecture: "aarch64".into(),
+            features: vec!["led.ring.rgb".into(), "audio.play.aplay".into()],
+            source: "test".into(),
+        };
+        assert!(lua_api_available(&device, "led").unwrap());
+        assert!(lua_api_available(&device, "audio").unwrap());
+        assert!(!lua_api_available(&device, "bluetooth").unwrap());
+        assert!(lua_api_available(&device, "exec").is_err());
     }
 
     #[test]
