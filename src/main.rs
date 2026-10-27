@@ -309,6 +309,9 @@ impl Led {
     }
     async fn off(&self) -> Result<()> {
         let c = self.settings.lock().await.clone();
+        if c.profile == "plum" {
+            return self.release_plum(&c);
+        }
         if c.profile == "midi" {
             return self.release_midi(&c);
         }
@@ -317,6 +320,37 @@ impl Led {
     async fn write(&self, c: &LedSettings, channel: &str, i: usize, value: u8) -> Result<()> {
         let path = led_brightness_path(c, channel, i)?;
         fs::write(&path, value.to_string()).with_context(|| format!("write {}", path.display()))
+    }
+    // On Lite 2, manual RGB brightness detaches platformd's framebuffer trigger.
+    // Release only the known three RGB LEDs; never clear a new Alice frame or
+    // touch the white clock segments. Validate every trigger before any write.
+    fn release_plum(&self, c: &LedSettings) -> Result<()> {
+        if c.profile != "plum" || c.count != 3 {
+            bail!("Lite 2 release requires the known three-LED plum profile")
+        }
+        let mut triggers = Vec::new();
+        for i in 0..c.count {
+            for channel in ["red", "green", "blue"] {
+                let trigger = led_brightness_path(c, channel, i)?.with_file_name("trigger");
+                let available = fs::read_to_string(&trigger)
+                    .with_context(|| format!("read trigger {}", trigger.display()))?;
+                if !available
+                    .split_whitespace()
+                    .any(|s| s.trim_start_matches('[').trim_end_matches(']') == "led_ring_fb")
+                {
+                    bail!(
+                        "native led_ring_fb trigger unavailable at {}",
+                        trigger.display()
+                    )
+                }
+                triggers.push(trigger);
+            }
+        }
+        for trigger in triggers {
+            fs::write(&trigger, "led_ring_fb")
+                .with_context(|| format!("restore trigger {}", trigger.display()))?;
+        }
+        Ok(())
     }
     // Writing brightness detaches the `ledfb-ring` trigger used by platformd.
     fn release_midi(&self, c: &LedSettings) -> Result<()> {
@@ -3468,6 +3502,141 @@ const UI: &str = include_str!("../web/index.html");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct PlumFixture {
+        root: PathBuf,
+        settings: LedSettings,
+    }
+    impl PlumFixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!("yam-plum-led-{}", uuid::Uuid::new_v4()));
+            let settings = LedSettings {
+                profile: "plum".into(),
+                count: 3,
+                sysfs_root: root.to_string_lossy().into_owned(),
+                path_template: None,
+            };
+            for i in 0..3 {
+                for channel in ["red", "green", "blue"] {
+                    let p = led_brightness_path(&settings, channel, i).unwrap();
+                    fs::create_dir_all(p.parent().unwrap()).unwrap();
+                    fs::write(&p, "73").unwrap();
+                    fs::write(p.with_file_name("trigger"), "[none] timer led_ring_fb").unwrap();
+                }
+            }
+            let clock = root.join("plum:white:clockA0");
+            fs::create_dir_all(&clock).unwrap();
+            fs::write(clock.join("brightness"), "19").unwrap();
+            fs::write(clock.join("trigger"), "[none] timer led_ring_fb").unwrap();
+            Self { root, settings }
+        }
+        fn led(&self) -> Led {
+            Led {
+                settings: Arc::new(Mutex::new(self.settings.clone())),
+            }
+        }
+        fn assert_untouched(&self) {
+            for i in 0..3 {
+                for channel in ["red", "green", "blue"] {
+                    assert_eq!(
+                        fs::read_to_string(
+                            led_brightness_path(&self.settings, channel, i).unwrap()
+                        )
+                        .unwrap(),
+                        "73"
+                    );
+                }
+            }
+            assert_eq!(
+                fs::read_to_string(self.root.join("plum:white:clockA0/brightness")).unwrap(),
+                "19"
+            );
+            assert_eq!(
+                fs::read_to_string(self.root.join("plum:white:clockA0/trigger")).unwrap(),
+                "[none] timer led_ring_fb"
+            );
+        }
+    }
+    impl Drop for PlumFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[tokio::test]
+    async fn plum_off_returns_native_rgb_without_clearing_clock_or_frame() {
+        let f = PlumFixture::new();
+        let led = f.led();
+        led.off().await.unwrap();
+        // Repeated release also accepts an already-selected/native trigger.
+        led.off().await.unwrap();
+        for i in 0..3 {
+            for channel in ["red", "green", "blue"] {
+                let p = led_brightness_path(&f.settings, channel, i)
+                    .unwrap()
+                    .with_file_name("trigger");
+                assert_eq!(fs::read_to_string(p).unwrap(), "led_ring_fb");
+            }
+        }
+        f.assert_untouched();
+    }
+
+    #[tokio::test]
+    async fn plum_release_checks_all_channels_before_writing() {
+        let f = PlumFixture::new();
+        let last = led_brightness_path(&f.settings, "blue", 2)
+            .unwrap()
+            .with_file_name("trigger");
+        fs::write(&last, "[none] timer").unwrap();
+        assert!(f
+            .led()
+            .off()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("unavailable"));
+        let first = led_brightness_path(&f.settings, "red", 0)
+            .unwrap()
+            .with_file_name("trigger");
+        assert_eq!(
+            fs::read_to_string(first).unwrap(),
+            "[none] timer led_ring_fb"
+        );
+        f.assert_untouched();
+    }
+
+    #[tokio::test]
+    async fn plum_release_rejects_missing_trigger_without_writes() {
+        let f = PlumFixture::new();
+        fs::remove_file(
+            led_brightness_path(&f.settings, "blue", 2)
+                .unwrap()
+                .with_file_name("trigger"),
+        )
+        .unwrap();
+        assert!(f.led().off().await.is_err());
+        assert_eq!(
+            fs::read_to_string(
+                led_brightness_path(&f.settings, "red", 0)
+                    .unwrap()
+                    .with_file_name("trigger")
+            )
+            .unwrap(),
+            "[none] timer led_ring_fb"
+        );
+        f.assert_untouched();
+    }
+
+    #[test]
+    fn plum_release_rejects_unknown_layout() {
+        let mut f = PlumFixture::new();
+        let led = f.led();
+        f.settings.count = 6;
+        assert!(led.release_plum(&f.settings).is_err());
+        f.settings.count = 3;
+        f.settings.profile = "custom".into();
+        assert!(led.release_plum(&f.settings).is_err());
+    }
 
     #[test]
     fn ipc_decodes_speech_and_alarm() {
