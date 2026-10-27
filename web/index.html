@@ -59,12 +59,12 @@ function escapeHtml(value) {
 function pluginRow(plugin) {
   const { manifest, enabled, running, compatible, incompatibility } = plugin;
   const id = escapeHtml(manifest.id);
-  const service = manifest.launch.mode === 'service';
+  const service = plugin.service_enabled === true;
   const run = compatible ? (running ? 'Перезапустить' : 'Запустить') : 'Несовместим';
   const disabled = compatible ? '' : `disabled title="${escapeHtml(incompatibility)}"`;
   const stop = running ? `<button onclick="action('${id}', 'stop')">Остановить</button>` : '';
   const launch = service ? `<button ${disabled} onclick="action('${id}', 'service/start')">${run}</button>` : `<button ${disabled} onclick="action('${id}', 'invoke')">Запустить</button>`;
-  return `<div class="plugin"><span><b>${escapeHtml(manifest.name)}</b> <small>${id} · ${escapeHtml(manifest.version)} · ${service ? 'service' : 'oneshot'}<br>${escapeHtml(manifest.description)}</small></span><button onclick="action('${id}', 'toggle')">${enabled ? 'Выключить' : 'Включить'}</button>${launch}${stop}<button onclick="action('${id}', 'delete')">Удалить</button></div>`;
+  return `<div class="plugin"><span><b>${escapeHtml(manifest.name)}</b> <small>${id} · ${escapeHtml(manifest.version)} · ${service ? 'autostart' : 'manual'}<br>${escapeHtml(manifest.description)}</small></span><button onclick="action('${id}', 'toggle')">${enabled ? 'Выключить' : 'Включить'}</button>${launch}${stop}<button onclick="action('${id}', 'delete')">Удалить</button></div>`;
 }
 async function load() {
   try {

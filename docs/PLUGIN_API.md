@@ -26,6 +26,28 @@ Lua-пакет получает `alice`, `device` и `event`. Укажите м�
 Низкоуровневый формат и процессы-владельцы потоков описаны в
 [Local Quasar IPC](IPC_PROTOCOL.md).
 
+## Наличие API и модель
+
+`alice.is_available(name)` возвращает, доступна ли возможность на текущей
+колонке. Это проверка аппаратной/системной возможности, а не permission:
+разрешение всё равно должно быть объявлено, иначе соответствующий API не
+появится в `alice`.
+
+Поддерживаются имена `led`, `volume`, `audio`, `bluetooth`, `display`,
+`sensors`, `sensors.control`, `clock`, `input`, `network`, `ipc.alarm`,
+`ipc.speech`, `ipc.read`, `ipc.control`, `commands` и `system`. Для `exec`
+проверка намеренно не предоставляется.
+
+`alice.model()` (и `device.model`) возвращает нормализованный ID модели для
+совместимости пакетов, например `yandexmicro`. Варианты строк из device tree,
+`--model` и `device.toml` приводятся к этому формату.
+
+```lua
+if alice.model() == "yandexmicro" and alice.is_available("led") then
+  alice.set({"#00FF00"})
+end
+```
+
 ## Совместимость и сеть
 
 Указывайте нужные возможности, а не модель:

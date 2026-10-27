@@ -9,6 +9,7 @@ VERSION=${1:-${YAM_VERSION:-latest}}
 BIN_DIR=${2:-${YAM_BIN_DIR:-$HOME/.local/bin}}
 REPOSITORY=https://github.com/nyakokitsu/yam
 DEVICE_PREFIX=/data/quazar/yam
+INIT_SCRIPT=/etc/init.d/S99yam
 
 if [ "$ACTION" = install ]; then
   case "$(uname -s):$(uname -m)" in
@@ -106,7 +107,12 @@ esac
 
 if [ "$ACTION" = uninstall ]; then
   rm -f "$BIN_DIR/yam" "$BIN_DIR/yam-bin"
-  adb -s "$DEVICE" shell "if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; rm -rf $DEVICE_PREFIX" </dev/null
+  adb -s "$DEVICE" shell "set -eu
+    mount -o remount,rw /
+    trap 'mount -o remount,ro /' EXIT
+    rm -f $INIT_SCRIPT
+    if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi
+    rm -rf $DEVICE_PREFIX" </dev/null
   echo "YAM removed from $BIN_DIR and $DEVICE ($DEVICE_PREFIX)."
   exit 0
 fi
@@ -127,6 +133,33 @@ chmod 0755 "$BIN_DIR/yam"
 adb -s "$DEVICE" shell "mkdir -p $DEVICE_PREFIX/bin $DEVICE_PREFIX/data" </dev/null
 adb -s "$DEVICE" push "$tmpdir/yamd-aarch64-linux-musl" "$DEVICE_PREFIX/bin/yamd.new" </dev/null >/dev/null
 adb -s "$DEVICE" shell "chmod 0755 $DEVICE_PREFIX/bin/yamd.new; if [ -f $DEVICE_PREFIX/yamd.pid ] && kill -0 \$(cat $DEVICE_PREFIX/yamd.pid) 2>/dev/null; then kill \$(cat $DEVICE_PREFIX/yamd.pid); fi; mv $DEVICE_PREFIX/bin/yamd.new $DEVICE_PREFIX/bin/yamd; start-stop-daemon --start --background --make-pidfile --pidfile $DEVICE_PREFIX/yamd.pid --startas $DEVICE_PREFIX/bin/yamd -- --data-dir $DEVICE_PREFIX/data" </dev/null
+adb -s "$DEVICE" shell "set -eu
+  mount -o remount,rw /
+  trap 'mount -o remount,ro /' EXIT
+  cat >$INIT_SCRIPT <<'EOF'
+#!/bin/sh
+
+case \"\${1:-}\" in
+  start)
+    prefix=/data/quazar/yam
+    pidfile=\"\$prefix/yamd.pid\"
+    [ -x \"\$prefix/bin/yamd\" ] || exit 0
+    mkdir -p \"\$prefix/data\"
+    if [ -f \"\$pidfile\" ] && kill -0 \"\$(cat \"\$pidfile\")\" 2>/dev/null; then
+      exit 0
+    fi
+    rm -f \"\$pidfile\"
+    start-stop-daemon --start --background --make-pidfile --pidfile \"\$pidfile\" --startas \"\$prefix/bin/yamd\" -- --data-dir \"\$prefix/data\"
+    ;;
+  stop)
+    prefix=/data/quazar/yam
+    [ -f \"\$prefix/yamd.pid\" ] && kill \"\$(cat \"\$prefix/yamd.pid\")\" 2>/dev/null || true
+    rm -f \"\$prefix/yamd.pid\"
+    ;;
+esac
+EOF
+  chmod 0755 $INIT_SCRIPT" </dev/null
 
 echo "YAM $VERSION CLI installed in $BIN_DIR/yam"
 echo "yamd deployed to $DEVICE ($DEVICE_PREFIX). Open http://$STATION_IP:8099"
+echo "yamd is configured to start automatically after the speaker reboots."
