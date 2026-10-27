@@ -48,26 +48,6 @@ struct Settings {
     web: WebSettings,
     #[serde(default)]
     allow_plugin_binaries: bool,
-    #[serde(default)]
-    updates: UpdateSettings,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UpdateSettings {
-    #[serde(default = "default_true")]
-    enabled: bool,
-    #[serde(default = "default_update_interval")]
-    interval_minutes: u64,
-}
-fn default_update_interval() -> u64 {
-    360
-}
-impl Default for UpdateSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            interval_minutes: default_update_interval(),
-        }
-    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WebSettings {
@@ -115,7 +95,6 @@ impl Default for Settings {
             },
             web: WebSettings::default(),
             allow_plugin_binaries: false,
-            updates: UpdateSettings::default(),
         }
     }
 }
@@ -3405,72 +3384,6 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn shell_quote(value: &std::ffi::OsStr) -> String {
-    format!("'{}'", value.to_string_lossy().replace('\'', "'\\''"))
-}
-
-fn stage_release_update(executable: &Path, data_dir: &Path, listen: &str) -> Result<bool> {
-    const RELEASES: &str = "https://github.com/nyakokitsu/yam/releases/latest/download";
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .build()?;
-    let sums = client
-        .get(format!("{RELEASES}/SHA256SUMS"))
-        .header("User-Agent", "yam-auto-updater")
-        .send()?
-        .error_for_status()?
-        .text()?;
-    let expected = sums
-        .lines()
-        .find_map(|line| {
-            let mut fields = line.split_whitespace();
-            match (fields.next(), fields.next()) {
-                (Some(hash), Some("yamd-aarch64-linux-musl")) => Some(hash),
-                _ => None,
-            }
-        })
-        .context("release SHA256SUMS has no yamd checksum")?;
-    if format!(
-        "{:x}",
-        Sha256::digest(fs::read(executable).unwrap_or_default())
-    ) == expected
-    {
-        return Ok(false);
-    }
-    let binary = client
-        .get(format!("{RELEASES}/yamd-aarch64-linux-musl"))
-        .header("User-Agent", "yam-auto-updater")
-        .send()?
-        .error_for_status()?
-        .bytes()?
-        .to_vec();
-    if format!("{:x}", Sha256::digest(&binary)) != expected {
-        bail!("release checksum mismatch")
-    }
-    let staged = executable.with_extension("yam-update");
-    fs::write(&staged, binary)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
-    }
-    let helper = data_dir.join(".yam-restart-update.sh");
-    fs::write(
-        &helper,
-        format!(
-            "#!/bin/sh\nsleep 1\nmv {} {}\nexec {} --listen {} --data-dir {}\n",
-            shell_quote(staged.as_os_str()),
-            shell_quote(executable.as_os_str()),
-            shell_quote(executable.as_os_str()),
-            shell_quote(std::ffi::OsStr::new(listen)),
-            shell_quote(data_dir.as_os_str()),
-        ),
-    )?;
-    Command::new("sh").arg(helper).spawn()?;
-    Ok(true)
-}
-
 /// Binary packages reach the daemon on loopback unless it listens on one address only.
 fn runtime_api_url(listen: &str) -> Result<String> {
     let mut address: std::net::SocketAddr = listen
@@ -3484,42 +3397,13 @@ fn runtime_api_url(listen: &str) -> Result<String> {
     }
     Ok(format!("http://{address}"))
 }
-fn start_auto_updater(app: App, executable: PathBuf, listen: String) {
-    task::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(60)).await;
-        loop {
-            if app.settings.lock().await.updates.enabled {
-                let executable = executable.clone();
-                let data_dir = app.root.clone();
-                let listen = listen.clone();
-                match task::spawn_blocking(move || {
-                    stage_release_update(&executable, &data_dir, &listen)
-                })
-                .await
-                {
-                    Ok(Ok(true)) => {
-                        tracing::info!("release update staged; restarting yamd");
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                        std::process::exit(0);
-                    }
-                    Ok(Ok(false)) => {}
-                    Ok(Err(error)) => tracing::warn!(%error, "automatic update check failed"),
-                    Err(error) => tracing::warn!(%error, "automatic update task failed"),
-                }
-            }
-            let interval = app.settings.lock().await.updates.interval_minutes;
-            tokio::time::sleep(Duration::from_secs(interval.clamp(5, 24 * 60) * 60)).await;
-        }
-    });
-}
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let args = Args::parse();
     fs::create_dir_all(&args.data_dir)?;
     let settings_path = args.data_dir.join("settings.toml");
-    // A broken settings.toml must not silently fall back to defaults: they
-    // re-enable the web API and auto-updates.
+    // A broken settings.toml must not silently fall back to defaults.
     let settings: Settings = match fs::read_to_string(&settings_path) {
         Ok(raw) => {
             toml::from_str(&raw).with_context(|| format!("invalid {}", settings_path.display()))?
@@ -3570,7 +3454,6 @@ async fn main() -> Result<()> {
         speech_claims: Arc::new(Mutex::new(HashMap::new())),
         runtime_api_url: runtime_api_url(&args.listen)?,
     };
-    start_auto_updater(app.clone(), std::env::current_exe()?, args.listen.clone());
     let services = {
         let device = app.device.lock().await.clone();
         app.plugins

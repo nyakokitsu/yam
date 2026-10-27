@@ -1,25 +1,10 @@
-### UNDER CONSTRUCTION! МЫ В ПРОЦЕССЕ ОБНОВЛЕНИЯ!
-# YAM
+# YAM — прекращение поддержки
 
-yam = Y Application Manager. Ставьте на свою колонку .yap.
+Legacy-версия YAM с `yamd`, веб-интерфейсом, Lua/Quasar API и пакетами `.yap`
+больше не поддерживается. Автоматические обновления отключены.
 
-Linux / macOS:
-```sh
-curl -fsSL https://hackalice.me/install.sh | sh
-```
+Переходите на новую версию YAM из ветки `v2`: она использует `.yampkg`,
+платформенные профили и проверяемые пакеты.
 
-Windows:
-
-```powershell
-irm https://hackalice.me/install.ps1 | iex
-```
-
-Установщик сам найдет рабочую колонку и установит через adb на нее `yamd`
-
-# Документация
-
-- [Установка и эксплуатация](docs/DEPLOYMENT.md)
-- [Пакеты и CLI](docs/PACKAGES.md)
-- [Lua API плагинов](docs/PLUGIN_API.md)
-
-Примеры [`examples/`](examples/).
+Старые installer URLs оставлены для уже развёрнутых устройств, но новых
+возможностей в legacy-ветке не будет.

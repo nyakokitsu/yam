@@ -131,5 +131,5 @@ jobs:
             dist/yam-aarch64-apple-darwin \
             dist/yam-x86_64-pc-windows-msvc.exe \
             dist/SHA256SUMS \
-            --title "YAM ${{ steps.version.outputs.version }}" \
-            --generate-notes
+            --title "YAM ${{ steps.version.outputs.version }} — EOL" \
+            --notes-file LEGACY_EOL.md
