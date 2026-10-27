@@ -38,4 +38,4 @@ yam service stop sensor-agent
 yam rm nano
 ```
 
-Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/logo`, `/logo/off` и `/clock` согласно permissions пакета.
+Binary runtime получает `YAM_API_URL` и одноразовый `YAM_API_TOKEN`; передавайте токен в `X-YAM-Token`. Доступны `/device`, `/sensors`, `/led`, `/led/off`, `/clock`, `/volume`, `/system` и `/bluetooth` согласно permissions пакета. Для Bluetooth actions используются `/bluetooth/{power,scan,pair,connect,disconnect,remove}`. `/logo` и `/logo/off` доступны только если текущая аппаратная реализация их поддерживает.

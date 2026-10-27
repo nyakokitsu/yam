@@ -253,6 +253,28 @@ struct ClockRequest {
     #[serde(default)]
     off: bool,
 }
+#[derive(Debug, Serialize)]
+struct VolumeInfo {
+    percent: Option<u8>,
+    raw: String,
+}
+#[derive(Debug, Deserialize)]
+struct VolumeRequest {
+    percent: u8,
+}
+#[derive(Debug, Serialize)]
+struct SystemInfo {
+    hostname: String,
+    uptime: String,
+    meminfo: String,
+}
+#[derive(Debug, Deserialize)]
+struct BluetoothRequest {
+    #[serde(default)]
+    on: Option<bool>,
+    #[serde(default)]
+    mac: Option<String>,
+}
 #[derive(Debug, Clone, Serialize)]
 struct PluginInfo {
     manifest: Manifest,
@@ -1971,6 +1993,34 @@ fn command_output(program: &str, args: &[String]) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
+fn volume_percent(raw: &str) -> Option<u8> {
+    raw.split_whitespace()
+        .filter_map(|part| part.find('%').map(|index| &part[..index]))
+        .filter_map(|value| {
+            value
+                .trim_matches(|character: char| !character.is_ascii_digit())
+                .parse::<u8>()
+                .ok()
+        })
+        .next()
+}
+fn volume_info() -> Result<VolumeInfo> {
+    let raw = command_output("amixer", &["get".into(), "Master".into()])?;
+    Ok(VolumeInfo {
+        percent: volume_percent(&raw),
+        raw,
+    })
+}
+fn set_volume(percent: u8) -> Result<VolumeInfo> {
+    if percent > 100 {
+        bail!("volume must be 0..100")
+    }
+    command_output(
+        "amixer",
+        &["set".into(), "Master".into(), format!("{percent}%")],
+    )?;
+    volume_info()
+}
 fn valid_mac(mac: &str) -> bool {
     mac.len() == 17
         && mac.bytes().enumerate().all(|(i, b)| {
@@ -3179,6 +3229,82 @@ async fn runtime_clock(
     runtime_permission(&a, &id, &headers, "clock").await?;
     put_clock(Json(request)).await
 }
+async fn runtime_volume(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<VolumeInfo>, ApiError> {
+    runtime_permission(&a, &id, &headers, "volume").await?;
+    Ok(Json(volume_info()?))
+}
+async fn runtime_volume_set(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+    Json(request): Json<VolumeRequest>,
+) -> Result<Json<VolumeInfo>, ApiError> {
+    runtime_permission(&a, &id, &headers, "volume").await?;
+    Ok(Json(set_volume(request.percent)?))
+}
+async fn runtime_system(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Json<SystemInfo>, ApiError> {
+    runtime_permission(&a, &id, &headers, "system").await?;
+    Ok(Json(SystemInfo {
+        hostname: fs::read_to_string("/etc/hostname")?.trim().to_string(),
+        uptime: fs::read_to_string("/proc/uptime")?,
+        meminfo: fs::read_to_string("/proc/meminfo")?,
+    }))
+}
+async fn runtime_bluetooth(
+    State(a): State<App>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<String, ApiError> {
+    runtime_permission(&a, &id, &headers, "bluetooth").await?;
+    Ok(command_output("bluetoothctl", &["show".into()])?)
+}
+async fn runtime_bluetooth_action(
+    State(a): State<App>,
+    AxumPath((id, action)): AxumPath<(String, String)>,
+    headers: HeaderMap,
+    request: Option<Json<BluetoothRequest>>,
+) -> Result<String, ApiError> {
+    runtime_permission(&a, &id, &headers, "bluetooth").await?;
+    let request = request.map(|value| value.0).unwrap_or(BluetoothRequest {
+        on: None,
+        mac: None,
+    });
+    let args = match action.as_str() {
+        "power" => vec![
+            "power".into(),
+            if request.on.unwrap_or(false) {
+                "on".into()
+            } else {
+                "off".into()
+            },
+        ],
+        "scan" => vec![
+            "scan".into(),
+            if request.on.unwrap_or(false) {
+                "on".into()
+            } else {
+                "off".into()
+            },
+        ],
+        action @ ("pair" | "connect" | "disconnect" | "remove") => {
+            let mac = request.mac.context("Bluetooth action requires mac")?;
+            if !valid_mac(&mac) {
+                return Err(ApiError(anyhow!("invalid Bluetooth MAC")));
+            }
+            vec![action.into(), mac]
+        }
+        _ => return Err(ApiError(anyhow!("unknown Bluetooth action"))),
+    };
+    Ok(command_output("bluetoothctl", &args)?)
+}
 async fn get_settings(State(a): State<App>) -> Json<Settings> {
     Json(a.settings.lock().await.clone())
 }
@@ -3481,6 +3607,16 @@ async fn main() -> Result<()> {
             .route("/api/runtime/:id/led", post(runtime_led))
             .route("/api/runtime/:id/led/off", post(runtime_led_off))
             .route("/api/runtime/:id/clock", post(runtime_clock))
+            .route(
+                "/api/runtime/:id/volume",
+                get(runtime_volume).put(runtime_volume_set),
+            )
+            .route("/api/runtime/:id/system", get(runtime_system))
+            .route("/api/runtime/:id/bluetooth", get(runtime_bluetooth))
+            .route(
+                "/api/runtime/:id/bluetooth/:action",
+                post(runtime_bluetooth_action),
+            )
             .route("/api/settings", get(get_settings).put(put_settings))
             .route("/api/device", get(get_device).put(put_device))
             .route("/api/sensors", get(get_sensors))
@@ -3762,5 +3898,13 @@ mod tests {
             devices,
             vec![("mute".into(), PathBuf::from("/dev/input/event2"))]
         );
+    }
+
+    #[test]
+    fn runtime_helpers_parse_native_values() {
+        let output = "Simple mixer control 'Master',0\n  Front Left: Playback 42 [42%] [on]\n";
+        assert_eq!(volume_percent(output), Some(42));
+        assert!(valid_mac("AA:BB:CC:DD:EE:FF"));
+        assert!(!valid_mac("not-a-mac"));
     }
 }
