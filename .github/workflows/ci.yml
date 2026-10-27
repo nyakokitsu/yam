@@ -27,6 +27,10 @@ jobs:
         run: cargo check --locked
       - name: Check installer syntax
         run: sh -n install.sh
+      - name: Check runtime speech API
+        run: |
+          cargo build --locked --bins
+          python3 tests/test_media_api.py target/debug/yamd
 
   aarch64-musl:
     name: Build AArch64 musl daemon
