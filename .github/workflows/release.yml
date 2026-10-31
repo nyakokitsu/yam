@@ -11,7 +11,7 @@ permissions:
 jobs:
   publisher-macos:
     name: Build yam-publish for macOS ARM64
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
