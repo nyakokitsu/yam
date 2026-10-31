@@ -54,21 +54,35 @@ function Get-Device {
 }
 
 function Get-DetectedPlatform([string]$Serial) {
-    $identity = (& adb -s $Serial shell 'getprop ro.product.model; getprop ro.product.device; cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n"' 2>$null | ForEach-Object { $_.Trim().ToLowerInvariant() }) -join "`n"
-    $platform = if ($identity -match 'yandex,station-mini2|station-mini2') { "yandexmini_2" }
-    elseif ($identity -match 'yandex,cucumber-dvt2|cucumber') { "cucumber" }
-    elseif ($identity -match 'yandex,station-midi') { "yandexmidi" }
-    elseif ($identity -match 'yandex,orion-pvt|orion') { "orion" }
-    elseif ($identity -match 'yandex,pickle-evt|pickle') { "pickle" }
-    elseif ($identity -match 'yandex,station-mini3|bergamot') { "bergamot" }
-    elseif ($identity -match 'yandex,saturn|saturn') { "saturn" }
-    elseif ($identity -match 'tulip-d1|tulip') { "yandexstation" }
-    elseif ($identity -match 'yandexstation_2|station-max') { "yandexstation_2" }
-    elseif ($identity -match 'mediatek,mt8167|jbl.*link.*music') { "jbl_link_music" }
-    elseif ($identity -match 'mango') { "mango" }
-    elseif ($identity -match 'plum') { "plum" }
-    elseif ($identity -match 'yandex.*station.*micro|yandexmicro') { "yandexmicro" }
-    elseif ($identity -match 'amlogic,axg') { "yandexmini" }
+    $quasarLine = & adb -s $Serial shell "grep deviceType /system/vendor/quasar/quasar.cfg 2>/dev/null" 2>$null | Select-Object -First 1
+    if ("$quasarLine" -match '"deviceType"\s*:\s*"([^"]+)"') {
+        $quasarType = ($Matches[1] -replace '\s+', '').ToLowerInvariant()
+        switch ($quasarType) {
+            { $_ -in @("yandexmicro", "plum", "yandexmini", "yandexmini_2", "bergamot", "pickle", "cucumber", "yandexmidi", "mango", "yandexstation_2", "yandexstation", "saturn", "jbl_link_music", "orion") } { return $_ }
+            { $_ -in @("yandexplum", "prune") } { return "plum" }
+        }
+    }
+    $identityLines = @(
+        & adb -s $Serial shell "getprop ro.product.model" 2>$null
+        & adb -s $Serial shell "getprop ro.product.device" 2>$null
+        & adb -s $Serial shell "tr '\000' '\n' </proc/device-tree/compatible 2>/dev/null" 2>$null
+    )
+    $identity = ($identityLines | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ }) -join "`n"
+    $compact = $identity -replace '[ \t]+', ''
+    $platform = if ($compact -match 'yandex,station-mini2|station-mini2') { "yandexmini_2" }
+    elseif ($compact -match 'yandex,cucumber-dvt2|cucumber') { "cucumber" }
+    elseif ($compact -match 'yandex,station-midi') { "yandexmidi" }
+    elseif ($compact -match 'yandex,orion-pvt|orion') { "orion" }
+    elseif ($compact -match 'yandex,pickle-evt|pickle') { "pickle" }
+    elseif ($compact -match 'yandex,station-mini3|bergamot') { "bergamot" }
+    elseif ($compact -match 'yandex,saturn|saturn') { "saturn" }
+    elseif ($compact -match 'tulip-d1|tulip') { "yandexstation" }
+    elseif ($compact -match 'yandexstation_2|station-max') { "yandexstation_2" }
+    elseif ($compact -match 'mediatek,mt8167|jbl.*link.*music') { "jbl_link_music" }
+    elseif ($compact -match 'mango') { "mango" }
+    elseif ($compact -match 'plum|prune') { "plum" }
+    elseif ($compact -match 'yandex.*station.*micro|yandexmicro') { "yandexmicro" }
+    elseif ($compact -match 'amlogic,axg') { "yandexmini" }
     else { $null }
     if (-not $platform) { throw "Не удалось определить платформу колонки. Задайте -Platform явно.`n$identity" }
     return $platform

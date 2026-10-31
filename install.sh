@@ -112,8 +112,12 @@ choose_device() {
 }
 
 device_identity() {
-  adb -s "$DEVICE" shell 'getprop ro.product.model; getprop ro.product.device; cat /proc/device-tree/compatible 2>/dev/null | tr "\000" "\n"' </dev/null 2>/dev/null \
-    | tr -d '\r' | tr '[:upper:]' '[:lower:]'
+  # maybe contains whitespace chars, remove it
+  {
+    adb -s "$DEVICE" shell 'getprop ro.product.model'
+    adb -s "$DEVICE" shell 'getprop ro.product.device'
+    adb -s "$DEVICE" shell 'tr "\000" "\n" </proc/device-tree/compatible'
+  } </dev/null 2>/dev/null | tr -d '\r \t' | tr '[:upper:]' '[:lower:]'
 }
 
 uninstall_script() {
@@ -151,6 +155,22 @@ EOF
 }
 
 detect_platform() {
+  quasar_type=$(
+    adb -s "$DEVICE" shell 'grep deviceType /system/vendor/quasar/quasar.cfg' </dev/null 2>/dev/null \
+      | awk -F'"' '{print $4; exit}' \
+      | tr -d '\r \t' \
+      | tr '[:upper:]' '[:lower:]'
+  )
+  case "$quasar_type" in
+    yandexmicro|plum|yandexmini|yandexmini_2|bergamot|pickle|cucumber|yandexmidi|mango|yandexstation_2|yandexstation|saturn|jbl_link_music|orion)
+      printf '%s\n' "$quasar_type"
+      return 0
+      ;;
+    yandexplum|prune)
+      printf '%s\n' plum
+      return 0
+      ;;
+  esac
   case "$DEVICE_IDENTITY" in
     *yandex,station-mini2*|*station-mini2*) printf '%s\n' yandexmini_2 ;;
     *yandex,cucumber-dvt2*|*cucumber*) printf '%s\n' cucumber ;;
@@ -163,7 +183,7 @@ detect_platform() {
     *yandexstation_2*|*station-max*) printf '%s\n' yandexstation_2 ;;
     *mediatek,mt8167*|*jbl*link*music*) printf '%s\n' jbl_link_music ;;
     *mango*) printf '%s\n' mango ;;
-    *plum*) printf '%s\n' plum ;;
+    *plum*|*prune*) printf '%s\n' plum ;;
     *yandex*station*micro*|*yandexmicro*) printf '%s\n' yandexmicro ;;
     *amlogic,axg*) printf '%s\n' yandexmini ;;
     *) return 1 ;;
