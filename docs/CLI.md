@@ -22,13 +22,13 @@ yam [ГЛОБАЛЬНЫЕ ФЛАГИ] <команда> [аргументы]
 На колонках установщик кладёт обёртку `$YAM_ROOT/bin/yam-run` (по умолчанию
 `/data/yam/bin/yam-run`), которая экспортирует `YAM_PLATFORM`,
 `YAM_PROFILES=$YAM_ROOT/platforms` и `YAM_ROOT` и запускает
-`$YAM_ROOT/bin/yam`. На Micro обёртка ещё и доступна как `/usr/bin/yam`, так
-что там достаточно `yam list`. На остальных платформах вызывайте обёртку по
-пути:
+`$YAM_ROOT/bin/yam`. Установщик также создаёт `/usr/bin/yam` и добавляет
+`$YAM_ROOT/bin` в `PATH`, поэтому на любой поддерживаемой станции достаточно
+написать:
 
 ```sh
-/data/yam/bin/yam-run list
-/data/yam/bin/yam-run update
+yam list
+yam update
 ```
 
 ## Пакеты

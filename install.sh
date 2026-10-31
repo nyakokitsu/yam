@@ -22,7 +22,7 @@ while [ "$#" -gt 0 ]; do
       echo '  --platform, -p  явно выбрать профиль станции (например yandexmini)'
       echo '  --remove-old  удалить legacy yamd из /data/quazar/yam'
       echo '  --uninstall   удалить YAM из $YAM_ROOT (по умолчанию /data/yam) вместе с пакетами и данными;'
-      echo '                на yandexmicro также /usr/bin/yam и /etc/init.d/S99yam'
+      echo '                также убрать созданные /usr/bin/yam и /etc/profile.d/yam.sh'
       echo '  --yes, -y     не спрашивать подтверждение при --uninstall'
       exit 0
       ;;
@@ -122,14 +122,17 @@ set -eu
 root='$DEVICE_ROOT'
 wrapper="\$root/bin/yam-run"
 link=/usr/bin/yam
+path_file=/etc/profile.d/yam.sh
 hook=/etc/init.d/S99yam
 own_root() { [ -f "\$wrapper" ] && [ ! -L "\$wrapper" ] && grep -Fqx "export YAM_PROFILES='\$root/platforms'" "\$wrapper"; }
 own_link() { [ -L "\$link" ] && [ "\$(readlink "\$link")" = "\$root/bin/yam-run" ]; }
+own_path() { [ -f "\$path_file" ] && grep -Fqx "# Managed by YAM installer" "\$path_file" && grep -Fqx "export PATH=\"\$root/bin:\$PATH\"" "\$path_file"; }
 own_hook() { [ -f "\$hook" ] && [ ! -L "\$hook" ] && grep -Fqx "root='\$root'" "\$hook"; }
-if own_link || own_hook; then
+if own_link || own_path || own_hook; then
   mount -o remount,rw /
   trap 'mount -o remount,ro /' EXIT
   if own_link; then rm -f "\$link"; echo "removed \$link"; fi
+  if own_path; then rm -f "\$path_file"; echo "removed \$path_file"; fi
   if own_hook; then rm -f "\$hook"; echo "removed \$hook"; fi
   mount -o remount,ro /
   trap - EXIT
@@ -252,13 +255,24 @@ adb -s "$DEVICE" push "$TMPDIR_INSTALL/yam-run" "$DEVICE_ROOT/bin/yam-run.new" <
 adb -s "$DEVICE" shell "chmod 0755 '$DEVICE_ROOT/bin/yam-run.new'; mv '$DEVICE_ROOT/bin/yam-run.new' '$DEVICE_ROOT/bin/yam-run'; test -s '$DEVICE_ROOT/bin/yam-run'" </dev/null
 
 YAM_CMD="$DEVICE_ROOT/bin/yam-run"
-if [ "$PLATFORM" = yandexmicro ]; then
-  adb -s "$DEVICE" shell "set -eu
+adb -s "$DEVICE" shell "set -eu
     mount -o remount,rw /
     trap 'mount -o remount,ro /' EXIT
     if [ -e /usr/bin/yam ] && { [ ! -L /usr/bin/yam ] || [ \"\$(readlink /usr/bin/yam)\" != '$DEVICE_ROOT/bin/yam-run' ]; }; then
       echo '/usr/bin/yam already belongs to another program' >&2; exit 1
     fi
+    mkdir -p /etc/profile.d
+    cat >/etc/profile.d/yam.sh <<'PATH'
+# Managed by YAM installer
+export PATH="$DEVICE_ROOT/bin:\$PATH"
+PATH
+    chmod 0644 /etc/profile.d/yam.sh
+    ln -sfn '$DEVICE_ROOT/bin/yam-run' /usr/bin/yam
+" </dev/null
+if [ "$PLATFORM" = yandexmicro ]; then
+  adb -s "$DEVICE" shell "set -eu
+    mount -o remount,rw /
+    trap 'mount -o remount,ro /' EXIT
     ln -sfn '$DEVICE_ROOT/bin/yam-run' /usr/bin/yam
     cat >/etc/init.d/S99yam <<'HOOK'
 #!/bin/sh

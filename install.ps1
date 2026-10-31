@@ -89,14 +89,17 @@ set -eu
 root='$deviceRoot'
 wrapper="`$root/bin/yam-run"
 link=/usr/bin/yam
+path_file=/etc/profile.d/yam.sh
 hook=/etc/init.d/S99yam
 own_root() { [ -f "`$wrapper" ] && [ ! -L "`$wrapper" ] && grep -Fqx "export YAM_PROFILES='`$root/platforms'" "`$wrapper"; }
 own_link() { [ -L "`$link" ] && [ "`$(readlink "`$link")" = "`$root/bin/yam-run" ]; }
+own_path() { [ -f "`$path_file" ] && grep -Fqx "# Managed by YAM installer" "`$path_file" && grep -Fqx "export PATH=\"`$root/bin:`$PATH\"" "`$path_file"; }
 own_hook() { [ -f "`$hook" ] && [ ! -L "`$hook" ] && grep -Fqx "root='`$root'" "`$hook"; }
-if own_link || own_hook; then
+if own_link || own_path || own_hook; then
   mount -o remount,rw /
   trap 'mount -o remount,ro /' EXIT
   if own_link; then rm -f "`$link"; echo "removed `$link"; fi
+  if own_path; then rm -f "`$path_file"; echo "removed `$path_file"; fi
   if own_hook; then rm -f "`$hook"; echo "removed `$hook"; fi
   mount -o remount,ro /
   trap - EXIT
@@ -189,6 +192,24 @@ exec '$deviceRoot/bin/yam' "`$@"
     & adb -s $serial push $runnerPath "$deviceRoot/bin/yam-run.new" | Out-Null
     & adb -s $serial shell "chmod 0755 '$deviceRoot/bin/yam-run.new'; mv '$deviceRoot/bin/yam-run.new' '$deviceRoot/bin/yam-run'; test -s '$deviceRoot/bin/yam-run'" | Out-Null
     $yamCommand = "$deviceRoot/bin/yam-run"
+    $pathSetup = @"
+set -eu
+mount -o remount,rw /
+trap 'mount -o remount,ro /' EXIT
+if [ -e /usr/bin/yam ] && { [ ! -L /usr/bin/yam ] || [ `$(readlink /usr/bin/yam) != '$deviceRoot/bin/yam-run' ]; }; then
+  echo '/usr/bin/yam already belongs to another program' >&2
+  exit 1
+fi
+mkdir -p /etc/profile.d
+cat >/etc/profile.d/yam.sh <<'PATH'
+# Managed by YAM installer
+export PATH="$deviceRoot/bin:`$PATH"
+PATH
+chmod 0644 /etc/profile.d/yam.sh
+ln -sfn '$deviceRoot/bin/yam-run' /usr/bin/yam
+"@
+    $pathSetup64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((($pathSetup -replace "`r`n", "`n") + "`n")))
+    & adb -s $serial shell "echo '$pathSetup64' | base64 -d | sh" | Out-Null
     if ($Platform -eq "yandexmicro") {
         $bootScript = @"
 #!/bin/sh
@@ -203,7 +224,7 @@ case "`${1:-}" in
 esac
 "@
         $bootScript64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((($bootScript -replace "`r`n", "`n") + "`n")))
-        $bootCommand = "set -eu; mount -o remount,rw /; trap 'mount -o remount,ro /' EXIT; if [ -e /usr/bin/yam ] && { [ ! -L /usr/bin/yam ] || [ `$(readlink /usr/bin/yam) != '$deviceRoot/bin/yam-run' ]; }; then exit 1; fi; ln -sfn '$deviceRoot/bin/yam-run' /usr/bin/yam; echo '$bootScript64' | base64 -d > /etc/init.d/S99yam; chmod 0755 /etc/init.d/S99yam"
+        $bootCommand = "set -eu; mount -o remount,rw /; trap 'mount -o remount,ro /' EXIT; ln -sfn '$deviceRoot/bin/yam-run' /usr/bin/yam; echo '$bootScript64' | base64 -d > /etc/init.d/S99yam; chmod 0755 /etc/init.d/S99yam"
         & adb -s $serial shell $bootCommand | Out-Null
         $yamCommand = "yam"
     } else {
