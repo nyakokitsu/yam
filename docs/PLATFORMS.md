@@ -39,6 +39,10 @@ Entware или возможность установки системных фа
 необходимости запускайте вручную командой `yam update`.
 
 `install.sh` и `install.ps1` определяют платформу по `deviceType` из
-`/system/vendor/quasar/quasar.cfg`, а при его отсутствии — по `getprop`/device-tree; при неудаче
-задайте её явно через `--platform <id>` или `YAM_PLATFORM`. `yandexplum` автоопределением не выбирается
-(определяется `plum`), но профиль устанавливается.
+`/system/vendor/quasar/quasar.cfg` с уточнением по SoC из
+`/proc/device-tree/compatible` (пример: внутреннее имя `yandexmidi` на Amlogic AXG —
+это розничная Станция 2 → `yandexstation_2`, а на Amlogic A5 — Станция Миди →
+`cucumber`), а при отсутствии `quasar.cfg` — по `getprop`/device-tree; при
+неудаче задайте её явно через `--platform <id>` или `YAM_PLATFORM`.
+`yandexplum` и `yandexmidi` автоопределением не выбираются, но профили
+устанавливаются.
