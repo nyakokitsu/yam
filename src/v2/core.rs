@@ -73,6 +73,13 @@ impl PlatformProfile {
         }
         Ok(profile)
     }
+
+    /// Whether a package manifest or source may target this profile.
+    /// Besides the profile id and "any", legacy devices accept the
+    /// canonical codename published by newer releases.
+    pub fn accepts_target(&self, target: &str) -> bool {
+        target == "any" || target == self.id || self.aliases.iter().any(|alias| alias == target)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

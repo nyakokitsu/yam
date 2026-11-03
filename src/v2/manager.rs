@@ -144,11 +144,16 @@ impl Manager {
         if !source
             .targets
             .iter()
-            .any(|target| target == &profile.id || target == "any")
+            .any(|target| profile.accepts_target(target))
         {
             bail!("{} does not support target {}", source.name, profile.id)
         }
-        let target = if source.targets.iter().any(|target| target == &profile.id) {
+        let target = if source.targets.iter().any(|target| target == &profile.id)
+            || source
+                .targets
+                .iter()
+                .any(|target| profile.aliases.iter().any(|alias| alias == target))
+        {
             profile.id.clone()
         } else {
             "any".into()
@@ -238,7 +243,7 @@ impl Manager {
         self.clear_stale_staging()?;
         let staging = self.root.join(".staging").join(Uuid::new_v4().to_string());
         fs::create_dir_all(staging.join("files"))?;
-        let manifest = match extract_artifact(artifact, &staging, &self.archive_limits()) {
+        let mut manifest = match extract_artifact(artifact, &staging, &self.archive_limits()) {
             Ok(manifest) => manifest,
             Err(error) => {
                 let _ = fs::remove_dir_all(&staging);
@@ -246,12 +251,17 @@ impl Manager {
             }
         };
         validate_manifest(&manifest)?;
-        if manifest.target != "any" && manifest.target != self.profile.id {
+        if !self.profile.accepts_target(&manifest.target) {
             bail!(
                 "package target {} does not match platform {}",
                 manifest.target,
                 self.profile.id
             )
+        }
+        if manifest.target != "any" && manifest.target != self.profile.id {
+            // Keep the database and `yam list` on the device profile id even
+            // when the artifact came from an alias target.
+            manifest.target = self.profile.id.clone();
         }
         if manifest.arch != self.profile.arch {
             bail!(

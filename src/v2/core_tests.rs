@@ -1203,3 +1203,45 @@ fn install_rejects_replacing_a_package_an_exact_name_dependency_still_needs() {
         "yam/soloist must remain installed after the rejected replace"
     );
 }
+
+#[test]
+fn alias_target_package_installs_under_the_device_profile() {
+    let work = TempDir::new().unwrap();
+    let paths = format!(
+        "paths:\n  root: {:?}\n  etc: {:?}\n  var: {:?}\n  run: {:?}\n",
+        work.path().join("root"),
+        work.path().join("etc"),
+        work.path().join("var"),
+        work.path().join("run"),
+    );
+    let plum: PlatformProfile = serde_yaml::from_str(&format!(
+        "id: plum\narch: aarch64\ntriple: aarch64-unknown-linux-musl\n{paths}"
+    ))
+    .unwrap();
+
+    let source = work.path().join("alias-src");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(
+        source.join("yam.yaml"),
+        "name: example/alias\nversion: 1.0.0\nlicense: MIT\ndescription: alias fixture\ntargets: [plum]\nfiles:\n  share/example.txt: example.txt\n",
+    )
+    .unwrap();
+    fs::write(source.join("example.txt"), b"alias").unwrap();
+    let artifact = work.path().join("alias.yampkg");
+    Manager::pack(&source, &plum, &artifact).unwrap();
+
+    let yandexplum: PlatformProfile = serde_yaml::from_str(&format!(
+        "id: yandexplum\naliases: [plum]\narch: aarch64\ntriple: aarch64-unknown-linux-musl\n{paths}"
+    ))
+    .unwrap();
+    let mut manager = Manager::open(yandexplum.paths.root.clone(), yandexplum).unwrap();
+    manager.install(&artifact, true).unwrap();
+
+    let installed = manager.list().unwrap();
+    assert_eq!(installed.len(), 1);
+    assert_eq!(installed[0].target, "yandexplum");
+    assert_eq!(
+        manager.which("share/example.txt").unwrap(),
+        Some("example/alias".into())
+    );
+}
