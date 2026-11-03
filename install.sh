@@ -77,7 +77,8 @@ latest_tag() {
     wget -qO- "$api"
   else
     return 1
-  fi | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(yam-v[^"]*\)".*/\1/p' | head -n 1
+  # github принудительно минифицирует json (возвращает одной строкой) если тегов много ~(Content-Length > 150_000)
+  fi | tr ',' '\n' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(yam-v[^"]*\)".*/\1/p' | head -n 1
 }
 
 
