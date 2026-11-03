@@ -412,6 +412,14 @@ fn resolve_full<S: IndexSource>(
     let artifact = metadata
         .artifacts
         .get(&profile.id)
+        .or_else(|| {
+            // Legacy platform ids reuse the artifact published under the
+            // station codename instead of duplicating every release.
+            profile
+                .aliases
+                .iter()
+                .find_map(|alias| metadata.artifacts.get(alias))
+        })
         .or_else(|| metadata.artifacts.get("any"))
         .context("package version has no artifact for this platform")?
         .clone();
@@ -772,6 +780,47 @@ mod tests {
             "a short name already satisfied by something installed must resolve to nothing, got {result:?}"
         );
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn alias_resolves_artifact_published_under_the_canonical_target() {
+        let profile: PlatformProfile = serde_yaml::from_str(
+            "id: yandexmidi\narch: aarch64\ntriple: aarch64-unknown-linux-musl\naliases: [cucumber]\npaths:\n  root: /tmp/root\n  etc: /tmp/etc\n  var: /tmp/var\n  run: /tmp/run\n",
+        )
+        .unwrap();
+        let index = PackageIndex {
+            format: 2,
+            name: "airplay/airplay-luna".into(),
+            versions: BTreeMap::from([(
+                "2.0.5".into(),
+                VersionMetadata {
+                    artifacts: BTreeMap::from([("cucumber".to_string(), artifact())]),
+                    published_at: None,
+                    depends: vec![],
+                    recommends: vec![],
+                    provides: vec![],
+                    conflicts: vec![],
+                    replaces: vec![],
+                },
+            )]),
+        };
+        let mut source = FakeSource {
+            catalogue: Catalogue {
+                format: 1,
+                packages: vec![entry("airplay/airplay-luna", &[])],
+            },
+            indices: BTreeMap::from([("airplay/airplay-luna".to_string(), index)]),
+        };
+        let resolved = resolve_with(
+            &mut source,
+            "airplay/airplay-luna",
+            None,
+            &profile,
+            &InstalledSnapshot::empty(),
+        )
+        .expect("alias target must resolve");
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].artifact.url, "https://example/a.yampkg");
     }
 
     #[test]

@@ -20,6 +20,10 @@ use super::version;
 #[serde(deny_unknown_fields)]
 pub struct PlatformProfile {
     pub id: String,
+    /// Registry targets that publish artifacts for this platform under a
+    /// different id (the Midi and Light 2 codenames).
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub arch: String,
     pub triple: String,
     pub paths: PlatformPaths,
@@ -63,6 +67,10 @@ impl PlatformProfile {
             )
         }
         validate_platform_id(&profile.id)?;
+        for alias in &profile.aliases {
+            validate_platform_id(alias)
+                .with_context(|| format!("profile {} has invalid alias {alias}", path.display()))?;
+        }
         Ok(profile)
     }
 }

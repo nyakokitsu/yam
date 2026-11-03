@@ -1,4 +1,5 @@
 id: yandexplum
+aliases: [plum]
 arch: aarch64
 triple: aarch64-unknown-linux-musl
 paths:
