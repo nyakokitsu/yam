@@ -114,11 +114,11 @@ choose_device() {
 
 device_identity() {
   # maybe contains whitespace chars, remove it
-  {
-    adb -s "$DEVICE" shell 'getprop ro.product.model 2>/dev/null'
-    adb -s "$DEVICE" shell 'getprop ro.product.device 2>/dev/null'
-    adb -s "$DEVICE" shell 'tr "\000" "\n" </proc/device-tree/compatible 2>/dev/null'
-  } </dev/null 2>/dev/null | tr -d '\r \t' | tr '[:upper:]' '[:lower:]'
+  adb -s "$DEVICE" shell '
+    getprop ro.product.device 2>/dev/null
+    getprop ro.product.model 2>/dev/null
+    cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id /proc/device-tree/model 2>/dev/null | tr "\000" "\n"
+  ' </dev/null 2>/dev/null | tr -d '\r \t' | tr '[:upper:]' '[:lower:]'
 }
 
 uninstall_script() {
@@ -166,26 +166,20 @@ EOF
 # - Партнёрская Fiero Hi ("blackthorn") аппаратно идентична Станции Лайт -> профиль "yandexmicro".
 detect_platform() {
   case "$DEVICE_IDENTITY" in
-    *yandex,station-mini2*|*station-mini2*) printf '%s\n' yandexmini_2 ;;
-    *yandex,cucumber-dvt2*|*cucumber*) printf '%s\n' cucumber ;;
-    *yandex,station-midi*)
-      # Миди == amlogic,a5 (cucumber), Станция 2 == amlogic,axg (yandexstation_2)
-      case "$DEVICE_IDENTITY" in
-        *cucumber*|*amlogic,a5*) printf '%s\n' cucumber ;;
-        *) printf '%s\n' yandexstation_2 ;;
-      esac
-      ;;
-    *yandex,orion-pvt*|*orion*) printf '%s\n' orion ;;
-    *yandex,pickle-evt*|*pickle*|*amlogic,a4*) printf '%s\n' pickle ;;
-    *yandex,station-mini3*|*bergamot*) printf '%s\n' bergamot ;;
+    *yandex,station-mini2*|*station-mini2*|*axg_mini2*) printf '%s\n' yandexmini_2 ;;
+    *yandex,cucumber*|*a5_cucumber*|*cucumber*) printf '%s\n' cucumber ;;
+    *yandex,station-midi*) printf '%s\n' yandexstation_2 ;;
+    *yandex,orion*|*a5_orion*|*orion*) printf '%s\n' orion ;;
+    *yandex,pickle*|*pickle*|*amlogic,a4*) printf '%s\n' pickle ;;
+    *yandex,bergamot*|*yandex,station-mini3*|*bergamot*) printf '%s\n' bergamot ;;
     *yandex,saturn*|*saturn*) printf '%s\n' saturn ;;
     *tulip-d1*|*tulip*|*sun50iw1*) printf '%s\n' yandexstation ;;
     *yandexstation_2*|*station-max*) printf '%s\n' yandexstation_2 ;;
     *mediatek,mt8167*|*aud8516*|*jbl*link*music*) printf '%s\n' jbl_link_music ;;
-    *mango*|*amlogic,a1*) printf '%s\n' mango ;;
-    *plum*|*prune*|*station-lite2*) printf '%s\n' plum ;;
-    *yandex*station*micro*|*yandexmicro*|*blackthorn*) printf '%s\n' yandexmicro ;;
-    *amlogic,axg*) printf '%s\n' yandexmini ;;
+    *yandex,mango*|*mango*|*amlogic,a1*) printf '%s\n' mango ;;
+    *yandex,plum*|*yandex,prune*|*plum*|*prune*|*station-lite2*) printf '%s\n' plum ;;
+    *yandex,yandexmicro*|*yandex*station*micro*|*yandexmicro*|*blackthorn*) printf '%s\n' yandexmicro ;;
+    *axg_s420*|*amlogic,axg*) printf '%s\n' yandexmini ;;
     *) return 1 ;;
   esac
 }

@@ -63,30 +63,23 @@ function Get-DetectedPlatform([string]$Serial) {
     # - Станция Мини 3 Про - "pickle" (процессор amlogic,a4) -> профиль "pickle".
     # - Лайт 2 имеет два имени платы: "plum" (с часами) и "prune" (без часов), оба -> профиль "plum".
     # - Партнёрская Fiero Hi ("blackthorn") аппаратно идентична Станции Лайт -> профиль "yandexmicro".
-    $identityLines = @(
-        & adb -s $Serial shell "getprop ro.product.model 2>/dev/null" 2>$null
-        & adb -s $Serial shell "getprop ro.product.device 2>/dev/null" 2>$null
-        & adb -s $Serial shell "tr '\000' '\n' </proc/device-tree/compatible 2>/dev/null" 2>$null
-    )
+    $identityLines = & adb -s $Serial shell 'getprop ro.product.device 2>/dev/null; getprop ro.product.model 2>/dev/null; cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id /proc/device-tree/model 2>/dev/null | tr "\000" "\n"' 2>$null
     $identity = ($identityLines | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ }) -join "`n"
     $compact = $identity -replace '[ \t]+', ''
-    $platform = if ($compact -match 'yandex,station-mini2|station-mini2') { "yandexmini_2" }
-    elseif ($compact -match 'yandex,cucumber-dvt2|cucumber') { "cucumber" }
-    elseif ($compact -match 'yandex,station-midi') {
-        # Миди == amlogic,a5 (cucumber), Станция 2 == amlogic,axg (yandexstation_2)
-        if ($compact -match 'cucumber|amlogic,a5') { "cucumber" } else { "yandexstation_2" }
-    }
-    elseif ($compact -match 'yandex,orion-pvt|orion') { "orion" }
-    elseif ($compact -match 'yandex,pickle-evt|pickle|amlogic,a4') { "pickle" }
-    elseif ($compact -match 'yandex,station-mini3|bergamot') { "bergamot" }
+    $platform = if ($compact -match 'yandex,station-mini2|station-mini2|axg_mini2') { "yandexmini_2" }
+    elseif ($compact -match 'yandex,cucumber|a5_cucumber|cucumber') { "cucumber" }
+    elseif ($compact -match 'yandex,station-midi') { "yandexstation_2" }
+    elseif ($compact -match 'yandex,orion|a5_orion|orion') { "orion" }
+    elseif ($compact -match 'yandex,pickle|pickle|amlogic,a4') { "pickle" }
+    elseif ($compact -match 'yandex,bergamot|yandex,station-mini3|bergamot') { "bergamot" }
     elseif ($compact -match 'yandex,saturn|saturn') { "saturn" }
     elseif ($compact -match 'tulip-d1|tulip|sun50iw1') { "yandexstation" }
     elseif ($compact -match 'yandexstation_2|station-max') { "yandexstation_2" }
     elseif ($compact -match 'mediatek,mt8167|aud8516|jbl.*link.*music') { "jbl_link_music" }
-    elseif ($compact -match 'mango|amlogic,a1') { "mango" }
-    elseif ($compact -match 'plum|prune|station-lite2') { "plum" }
-    elseif ($compact -match 'yandex.*station.*micro|yandexmicro|blackthorn') { "yandexmicro" }
-    elseif ($compact -match 'amlogic,axg') { "yandexmini" }
+    elseif ($compact -match 'yandex,mango|mango|amlogic,a1') { "mango" }
+    elseif ($compact -match 'yandex,plum|yandex,prune|plum|prune|station-lite2') { "plum" }
+    elseif ($compact -match 'yandex,yandexmicro|yandex.*station.*micro|yandexmicro|blackthorn') { "yandexmicro" }
+    elseif ($compact -match 'axg_s420|amlogic,axg') { "yandexmini" }
     else { $null }
     if (-not $platform) { throw "Не удалось определить платформу колонки. Задайте -Platform явно.`n$identity" }
     return $platform

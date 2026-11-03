@@ -39,7 +39,8 @@ Entware или возможность установки системных фа
 необходимости запускайте вручную командой `yam update`.
 
 `install.sh` и `install.ps1` определяют платформу по `getprop`/device-tree
-(`/proc/device-tree/compatible`); при неудаче задайте её явно через
+(`/proc/device-tree/compatible`, `/proc/device-tree/amlogic-dt-id`,
+`/proc/device-tree/model`); при неудаче задайте её явно через
 `--platform <id>` или `YAM_PLATFORM`. `yandexplum` и `yandexmidi`
 автоопределением не выбираются, но профили устанавливаются.
 
