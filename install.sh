@@ -117,7 +117,7 @@ device_identity() {
   adb -s "$DEVICE" shell '
     getprop ro.product.device 2>/dev/null
     getprop ro.product.model 2>/dev/null
-    cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id /proc/device-tree/model 2>/dev/null | tr "\000" "\n"
+    cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id 2>/dev/null | tr "\000" "\n"
   ' </dev/null 2>/dev/null | tr -d '\r \t' | tr '[:upper:]' '[:lower:]'
 }
 

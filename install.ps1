@@ -63,7 +63,7 @@ function Get-DetectedPlatform([string]$Serial) {
     # - Станция Мини 3 Про - "pickle" (процессор amlogic,a4) -> профиль "pickle".
     # - Лайт 2 имеет два имени платы: "plum" (с часами) и "prune" (без часов), оба -> профиль "plum".
     # - Партнёрская Fiero Hi ("blackthorn") аппаратно идентична Станции Лайт -> профиль "yandexmicro".
-    $identityLines = & adb -s $Serial shell 'getprop ro.product.device 2>/dev/null; getprop ro.product.model 2>/dev/null; cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id /proc/device-tree/model 2>/dev/null | tr "\000" "\n"' 2>$null
+    $identityLines = & adb -s $Serial shell 'getprop ro.product.device 2>/dev/null; getprop ro.product.model 2>/dev/null; cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id 2>/dev/null | tr "\000" "\n"' 2>$null
     $identity = ($identityLines | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ }) -join "`n"
     $compact = $identity -replace '[ \t]+', ''
     $platform = if ($compact -match 'yandex,station-mini2|station-mini2|axg_mini2') { "yandexmini_2" }
