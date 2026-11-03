@@ -158,48 +158,12 @@ EOF
 # необходимо дополнительно проверять SoC
 # - Станция 2 внутри прошивки названа "yandexmidi" (процессор amlogic,axg) -> профиль "yandexstation_2".
 # - Станция Миди - "cucumber" (процессор amlogic,a5) -> профиль "cucumber".
-# - Станция Макс (Android) - "yandexstation_2" (нет quasar.cfg) -> профиль "yandexstation_2".
+# - Станция Макс (Android) - "yandexstation_2" (процессор amlogic,g12a) -> профиль "yandexstation_2".
 # - Станция Мини 3 - "bergamot" (процессор amlogic,axg) -> профиль "bergamot".
 # - Станция Мини 3 Про - "pickle" (процессор amlogic,a4) -> профиль "pickle".
 # - Лайт 2 имеет два имени платы: "plum" (с часами) и "prune" (без часов), оба -> профиль "plum".
 # - Партнёрская Fiero Hi ("blackthorn") аппаратно идентична Станции Лайт -> профиль "yandexmicro".
 detect_platform() {
-  quasar_type=$(
-    adb -s "$DEVICE" shell 'grep deviceType /system/vendor/quasar/quasar.cfg 2>/dev/null' </dev/null 2>/dev/null \
-      | awk -F'"' '{print $4; exit}' \
-      | tr -d '\r \t' \
-      | tr '[:upper:]' '[:lower:]'
-  )
-  case "$quasar_type" in
-    yandexmidi)
-      # Миди == amlogic,a5 (cucumber), Станция 2 == amlogic,axg (yandexstation_2)
-      case "$DEVICE_IDENTITY" in
-        *cucumber*|*amlogic,a5*) printf '%s\n' cucumber ;;
-        *) printf '%s\n' yandexstation_2 ;;
-      esac
-      return 0
-      ;;
-    yandexmicro|plum|yandexmini|yandexmini_2|bergamot|pickle|cucumber|mango|yandexstation_2|yandexstation|saturn|jbl_link_music|orion)
-      printf '%s\n' "$quasar_type"
-      return 0
-      ;;
-    yandexplum|prune)
-      printf '%s\n' plum
-      return 0
-      ;;
-    blackthorn)
-      printf '%s\n' yandexmicro
-      return 0
-      ;;
-    yandexmini3|yandexmini_3)
-      printf '%s\n' bergamot
-      return 0
-      ;;
-    yandexmini_3_pro|mini3pro)
-      printf '%s\n' pickle
-      return 0
-      ;;
-  esac
   case "$DEVICE_IDENTITY" in
     *yandex,station-mini2*|*station-mini2*) printf '%s\n' yandexmini_2 ;;
     *yandex,cucumber-dvt2*|*cucumber*) printf '%s\n' cucumber ;;

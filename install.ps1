@@ -58,7 +58,7 @@ function Get-DetectedPlatform([string]$Serial) {
     # необходимо дополнительно проверять SoC
     # - Станция 2 внутри прошивки названа "yandexmidi" (процессор amlogic,axg) -> профиль "yandexstation_2".
     # - Станция Миди - "cucumber" (процессор amlogic,a5) -> профиль "cucumber".
-    # - Станция Макс (Android) - "yandexstation_2" (нет quasar.cfg) -> профиль "yandexstation_2".
+    # - Станция Макс (Android) - "yandexstation_2" (процессор amlogic,g12a) -> профиль "yandexstation_2".
     # - Станция Мини 3 - "bergamot" (процессор amlogic,axg) -> профиль "bergamot".
     # - Станция Мини 3 Про - "pickle" (процессор amlogic,a4) -> профиль "pickle".
     # - Лайт 2 имеет два имени платы: "plum" (с часами) и "prune" (без часов), оба -> профиль "plum".
@@ -70,22 +70,6 @@ function Get-DetectedPlatform([string]$Serial) {
     )
     $identity = ($identityLines | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ }) -join "`n"
     $compact = $identity -replace '[ \t]+', ''
-    $quasarLine = & adb -s $Serial shell "grep deviceType /system/vendor/quasar/quasar.cfg 2>/dev/null" 2>$null | Select-Object -First 1
-    if ("$quasarLine" -match '"deviceType"\s*:\s*"([^"]+)"') {
-        $quasarType = ($Matches[1] -replace '\s+', '').ToLowerInvariant()
-        switch ($quasarType) {
-            "yandexmidi" {
-                # Миди == amlogic,a5 (cucumber), Станция 2 == amlogic,axg (yandexstation_2)
-                if ($compact -match 'cucumber|amlogic,a5') { return "cucumber" }
-                return "yandexstation_2"
-            }
-            { $_ -in @("yandexmicro", "plum", "yandexmini", "yandexmini_2", "bergamot", "pickle", "cucumber", "mango", "yandexstation_2", "yandexstation", "saturn", "jbl_link_music", "orion") } { return $_ }
-            { $_ -in @("yandexplum", "prune") } { return "plum" }
-            "blackthorn" { return "yandexmicro" }
-            { $_ -in @("yandexmini3", "yandexmini_3") } { return "bergamot" }
-            { $_ -in @("yandexmini_3_pro", "mini3pro") } { return "pickle" }
-        }
-    }
     $platform = if ($compact -match 'yandex,station-mini2|station-mini2') { "yandexmini_2" }
     elseif ($compact -match 'yandex,cucumber-dvt2|cucumber') { "cucumber" }
     elseif ($compact -match 'yandex,station-midi') {
