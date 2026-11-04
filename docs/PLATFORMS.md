@@ -38,7 +38,11 @@ Entware или возможность установки системных фа
 загрузке только для него. На остальных платформах обновление при
 необходимости запускайте вручную командой `yam update`.
 
-`install.sh` и `install.ps1` определяют платформу по `deviceType` из
-`/system/vendor/quasar/quasar.cfg`, а при его отсутствии — по `getprop`/device-tree; при неудаче
-задайте её явно через `--platform <id>` или `YAM_PLATFORM`. `yandexplum` автоопределением не выбирается
-(определяется `plum`), но профиль устанавливается.
+`install.sh` и `install.ps1` определяют платформу по `getprop`/device-tree
+(`/proc/device-tree/compatible`, `/proc/device-tree/amlogic-dt-id`); при
+неудаче задайте её явно через `--platform <id>` или `YAM_PLATFORM`.
+`yandexplum` и `yandexmidi` автоопределением не выбираются, но профили
+устанавливаются.
+
+>[!warning]
+>Не используйте `deviceType` из `/system/vendor/quasar/quasar.cfg` и `/proc/device-tree/model` для определения платформы: в них возможны коллизии внутренних имён и шаблонные строки, не отражающие реальную аппаратную модель и SoC (например, у розничной Станции 2 на Amlogic AXG в `quasar.cfg` указано `"yandexmidi"`, а в `/proc/device-tree/model` — `Yandex Station Midi`; у Станции Мини 1 в `model` лежит дефолтное `Amlogic`, а на Android-станциях `quasar.cfg` отсутствует).

@@ -77,7 +77,8 @@ latest_tag() {
     wget -qO- "$api"
   else
     return 1
-  fi | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(yam-v[^"]*\)".*/\1/p' | head -n 1
+  # github принудительно минифицирует json (возвращает одной строкой) если тегов много ~(Content-Length > 150_000)
+  fi | tr ',' '\n' | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\(yam-v[^"]*\)".*/\1/p' | head -n 1
 }
 
 
@@ -113,11 +114,11 @@ choose_device() {
 
 device_identity() {
   # maybe contains whitespace chars, remove it
-  {
-    adb -s "$DEVICE" shell 'getprop ro.product.model'
-    adb -s "$DEVICE" shell 'getprop ro.product.device'
-    adb -s "$DEVICE" shell 'tr "\000" "\n" </proc/device-tree/compatible'
-  } </dev/null 2>/dev/null | tr -d '\r \t' | tr '[:upper:]' '[:lower:]'
+  adb -s "$DEVICE" shell '
+    getprop ro.product.device 2>/dev/null
+    getprop ro.product.model 2>/dev/null
+    cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id 2>/dev/null | tr "\000" "\n"
+  ' </dev/null 2>/dev/null | tr -d '\r \t' | tr '[:upper:]' '[:lower:]'
 }
 
 uninstall_script() {
@@ -130,7 +131,7 @@ path_file=/etc/profile.d/yam.sh
 hook=/etc/init.d/S99yam
 own_root() { [ -f "\$wrapper" ] && [ ! -L "\$wrapper" ] && grep -Fqx "export YAM_PROFILES='\$root/platforms'" "\$wrapper"; }
 own_link() { [ -L "\$link" ] && [ "\$(readlink "\$link")" = "\$root/bin/yam-run" ]; }
-own_path() { [ -f "\$path_file" ] && grep -Fqx "# Managed by YAM installer" "\$path_file" && grep -Fqx "export PATH=\"\$root/bin:\$PATH\"" "\$path_file"; }
+own_path() { [ -f "\$path_file" ] && grep -Fqx "# Managed by YAM installer" "\$path_file" && grep -Fqx 'export PATH="'"\$root"'/bin:\$PATH"' "\$path_file"; }
 own_hook() { [ -f "\$hook" ] && [ ! -L "\$hook" ] && grep -Fqx "root='\$root'" "\$hook"; }
 if own_link || own_path || own_hook; then
   mount -o remount,rw /
@@ -154,38 +155,31 @@ echo YAM-UNINSTALL-DONE
 EOF
 }
 
+# В прошивках Яндекса кодовые имена сдвинуты относительно розничных названий (https://hackalice.me/devices/)
+# необходимо дополнительно проверять SoC
+# - Станция 2 внутри прошивки названа "yandexmidi" (процессор amlogic,axg) -> профиль "yandexstation_2".
+# - Станция Миди - "cucumber" (процессор amlogic,a5) -> профиль "cucumber".
+# - Станция Макс (Android) - "yandexstation_2" (процессор amlogic,g12a) -> профиль "yandexstation_2".
+# - Станция Мини 3 - "bergamot" (процессор amlogic,axg) -> профиль "bergamot".
+# - Станция Мини 3 Про - "pickle" (процессор amlogic,a4) -> профиль "pickle".
+# - Лайт 2 имеет два имени платы: "plum" (с часами) и "prune" (без часов), оба -> профиль "plum".
+# - Партнёрская Fiero Hi ("blackthorn") аппаратно идентична Станции Лайт -> профиль "yandexmicro".
 detect_platform() {
-  quasar_type=$(
-    adb -s "$DEVICE" shell 'grep deviceType /system/vendor/quasar/quasar.cfg' </dev/null 2>/dev/null \
-      | awk -F'"' '{print $4; exit}' \
-      | tr -d '\r \t' \
-      | tr '[:upper:]' '[:lower:]'
-  )
-  case "$quasar_type" in
-    yandexmicro|plum|yandexmini|yandexmini_2|bergamot|pickle|cucumber|yandexmidi|mango|yandexstation_2|yandexstation|saturn|jbl_link_music|orion)
-      printf '%s\n' "$quasar_type"
-      return 0
-      ;;
-    yandexplum|prune)
-      printf '%s\n' plum
-      return 0
-      ;;
-  esac
   case "$DEVICE_IDENTITY" in
-    *yandex,station-mini2*|*station-mini2*) printf '%s\n' yandexmini_2 ;;
-    *yandex,cucumber-dvt2*|*cucumber*) printf '%s\n' cucumber ;;
-    *yandex,station-midi*) printf '%s\n' yandexmidi ;;
-    *yandex,orion-pvt*|*orion*) printf '%s\n' orion ;;
-    *yandex,pickle-evt*|*pickle*) printf '%s\n' pickle ;;
-    *yandex,station-mini3*|*bergamot*) printf '%s\n' bergamot ;;
+    *yandex,station-mini2*|*station-mini2*|*axg_mini2*) printf '%s\n' yandexmini_2 ;;
+    *yandex,cucumber*|*a5_cucumber*|*cucumber*) printf '%s\n' cucumber ;;
+    *yandex,station-midi*) printf '%s\n' yandexstation_2 ;;
+    *yandex,orion*|*a5_orion*|*orion*) printf '%s\n' orion ;;
+    *yandex,pickle*|*pickle*|*amlogic,a4*) printf '%s\n' pickle ;;
+    *yandex,bergamot*|*yandex,station-mini3*|*bergamot*) printf '%s\n' bergamot ;;
     *yandex,saturn*|*saturn*) printf '%s\n' saturn ;;
-    *tulip-d1*|*tulip*) printf '%s\n' yandexstation ;;
+    *tulip-d1*|*tulip*|*sun50iw1*) printf '%s\n' yandexstation ;;
     *yandexstation_2*|*station-max*) printf '%s\n' yandexstation_2 ;;
-    *mediatek,mt8167*|*jbl*link*music*) printf '%s\n' jbl_link_music ;;
-    *mango*) printf '%s\n' mango ;;
-    *plum*|*prune*) printf '%s\n' plum ;;
-    *yandex*station*micro*|*yandexmicro*) printf '%s\n' yandexmicro ;;
-    *amlogic,axg*) printf '%s\n' yandexmini ;;
+    *mediatek,mt8167*|*aud8516*|*jbl*link*music*) printf '%s\n' jbl_link_music ;;
+    *yandex,mango*|*mango*|*amlogic,a1*) printf '%s\n' mango ;;
+    *yandex,plum*|*yandex,prune*|*plum*|*prune*|*station-lite2*) printf '%s\n' plum ;;
+    *yandex,yandexmicro*|*yandex*station*micro*|*yandexmicro*|*blackthorn*) printf '%s\n' yandexmicro ;;
+    *axg_s420*|*amlogic,axg*) printf '%s\n' yandexmini ;;
     *) return 1 ;;
   esac
 }
@@ -284,7 +278,7 @@ adb -s "$DEVICE" shell "set -eu
     mkdir -p /etc/profile.d
     cat >/etc/profile.d/yam.sh <<'PATH'
 # Managed by YAM installer
-export PATH="$DEVICE_ROOT/bin:\$PATH"
+export PATH=\"$DEVICE_ROOT/bin:\$PATH\"
 PATH
     chmod 0644 /etc/profile.d/yam.sh
     ln -sfn '$DEVICE_ROOT/bin/yam-run' /usr/bin/yam
@@ -301,7 +295,7 @@ platform='$PLATFORM'
 case \"\${1:-}\" in
   start)
     [ -x \"\$root/bin/yam\" ] || exit 0
-    ln -sfn "\$root/bin/yam-run" /usr/bin/yam
+    ln -sfn \"\$root/bin/yam-run\" /usr/bin/yam
     /usr/bin/yam update || true
     ;;
 esac

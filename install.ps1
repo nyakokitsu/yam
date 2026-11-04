@@ -54,35 +54,32 @@ function Get-Device {
 }
 
 function Get-DetectedPlatform([string]$Serial) {
-    $quasarLine = & adb -s $Serial shell "grep deviceType /system/vendor/quasar/quasar.cfg 2>/dev/null" 2>$null | Select-Object -First 1
-    if ("$quasarLine" -match '"deviceType"\s*:\s*"([^"]+)"') {
-        $quasarType = ($Matches[1] -replace '\s+', '').ToLowerInvariant()
-        switch ($quasarType) {
-            { $_ -in @("yandexmicro", "plum", "yandexmini", "yandexmini_2", "bergamot", "pickle", "cucumber", "yandexmidi", "mango", "yandexstation_2", "yandexstation", "saturn", "jbl_link_music", "orion") } { return $_ }
-            { $_ -in @("yandexplum", "prune") } { return "plum" }
-        }
-    }
-    $identityLines = @(
-        & adb -s $Serial shell "getprop ro.product.model" 2>$null
-        & adb -s $Serial shell "getprop ro.product.device" 2>$null
-        & adb -s $Serial shell "tr '\000' '\n' </proc/device-tree/compatible 2>/dev/null" 2>$null
-    )
+    # В прошивках Яндекса кодовые имена сдвинуты относительно розничных названий (https://hackalice.me/devices/)
+    # необходимо дополнительно проверять SoC
+    # - Станция 2 внутри прошивки названа "yandexmidi" (процессор amlogic,axg) -> профиль "yandexstation_2".
+    # - Станция Миди - "cucumber" (процессор amlogic,a5) -> профиль "cucumber".
+    # - Станция Макс (Android) - "yandexstation_2" (процессор amlogic,g12a) -> профиль "yandexstation_2".
+    # - Станция Мини 3 - "bergamot" (процессор amlogic,axg) -> профиль "bergamot".
+    # - Станция Мини 3 Про - "pickle" (процессор amlogic,a4) -> профиль "pickle".
+    # - Лайт 2 имеет два имени платы: "plum" (с часами) и "prune" (без часов), оба -> профиль "plum".
+    # - Партнёрская Fiero Hi ("blackthorn") аппаратно идентична Станции Лайт -> профиль "yandexmicro".
+    $identityLines = & adb -s $Serial shell 'getprop ro.product.device 2>/dev/null; getprop ro.product.model 2>/dev/null; cat /proc/device-tree/compatible /proc/device-tree/amlogic-dt-id 2>/dev/null | tr "\000" "\n"' 2>$null
     $identity = ($identityLines | ForEach-Object { "$_".Trim().ToLowerInvariant() } | Where-Object { $_ }) -join "`n"
     $compact = $identity -replace '[ \t]+', ''
-    $platform = if ($compact -match 'yandex,station-mini2|station-mini2') { "yandexmini_2" }
-    elseif ($compact -match 'yandex,cucumber-dvt2|cucumber') { "cucumber" }
-    elseif ($compact -match 'yandex,station-midi') { "yandexmidi" }
-    elseif ($compact -match 'yandex,orion-pvt|orion') { "orion" }
-    elseif ($compact -match 'yandex,pickle-evt|pickle') { "pickle" }
-    elseif ($compact -match 'yandex,station-mini3|bergamot') { "bergamot" }
+    $platform = if ($compact -match 'yandex,station-mini2|station-mini2|axg_mini2') { "yandexmini_2" }
+    elseif ($compact -match 'yandex,cucumber|a5_cucumber|cucumber') { "cucumber" }
+    elseif ($compact -match 'yandex,station-midi') { "yandexstation_2" }
+    elseif ($compact -match 'yandex,orion|a5_orion|orion') { "orion" }
+    elseif ($compact -match 'yandex,pickle|pickle|amlogic,a4') { "pickle" }
+    elseif ($compact -match 'yandex,bergamot|yandex,station-mini3|bergamot') { "bergamot" }
     elseif ($compact -match 'yandex,saturn|saturn') { "saturn" }
-    elseif ($compact -match 'tulip-d1|tulip') { "yandexstation" }
+    elseif ($compact -match 'tulip-d1|tulip|sun50iw1') { "yandexstation" }
     elseif ($compact -match 'yandexstation_2|station-max') { "yandexstation_2" }
-    elseif ($compact -match 'mediatek,mt8167|jbl.*link.*music') { "jbl_link_music" }
-    elseif ($compact -match 'mango') { "mango" }
-    elseif ($compact -match 'plum|prune') { "plum" }
-    elseif ($compact -match 'yandex.*station.*micro|yandexmicro') { "yandexmicro" }
-    elseif ($compact -match 'amlogic,axg') { "yandexmini" }
+    elseif ($compact -match 'mediatek,mt8167|aud8516|jbl.*link.*music') { "jbl_link_music" }
+    elseif ($compact -match 'yandex,mango|mango|amlogic,a1') { "mango" }
+    elseif ($compact -match 'yandex,plum|yandex,prune|plum|prune|station-lite2') { "plum" }
+    elseif ($compact -match 'yandex,yandexmicro|yandex.*station.*micro|yandexmicro|blackthorn') { "yandexmicro" }
+    elseif ($compact -match 'axg_s420|amlogic,axg') { "yandexmini" }
     else { $null }
     if (-not $platform) { throw "Не удалось определить платформу колонки. Задайте -Platform явно.`n$identity" }
     return $platform
@@ -107,7 +104,7 @@ path_file=/etc/profile.d/yam.sh
 hook=/etc/init.d/S99yam
 own_root() { [ -f "`$wrapper" ] && [ ! -L "`$wrapper" ] && grep -Fqx "export YAM_PROFILES='`$root/platforms'" "`$wrapper"; }
 own_link() { [ -L "`$link" ] && [ "`$(readlink "`$link")" = "`$root/bin/yam-run" ]; }
-own_path() { [ -f "`$path_file" ] && grep -Fqx "# Managed by YAM installer" "`$path_file" && grep -Fqx "export PATH=\"`$root/bin:`$PATH\"" "`$path_file"; }
+own_path() { [ -f "`$path_file" ] && grep -Fqx "# Managed by YAM installer" "`$path_file" && grep -Fqx 'export PATH="'"`$root"'/bin:`$PATH"' "`$path_file"; }
 own_hook() { [ -f "`$hook" ] && [ ! -L "`$hook" ] && grep -Fqx "root='`$root'" "`$hook"; }
 if own_link || own_path || own_hook; then
   mount -o remount,rw /
@@ -210,7 +207,7 @@ exec '$deviceRoot/bin/yam' "`$@"
 set -eu
 mount -o remount,rw /
 trap 'mount -o remount,ro /' EXIT
-if [ -e /usr/bin/yam ] && { [ ! -L /usr/bin/yam ] || [ `$(readlink /usr/bin/yam) != '$deviceRoot/bin/yam-run' ]; }; then
+if [ -e /usr/bin/yam ] && { [ ! -L /usr/bin/yam ] || [ "`$(readlink /usr/bin/yam)" != '$deviceRoot/bin/yam-run' ]; }; then
   echo '/usr/bin/yam already belongs to another program' >&2
   exit 1
 fi
