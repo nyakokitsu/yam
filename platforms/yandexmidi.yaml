@@ -1,4 +1,5 @@
 id: yandexmidi
+aliases: [cucumber]
 arch: aarch64
 triple: aarch64-unknown-linux-musl
 paths:
