@@ -233,7 +233,7 @@ pub(crate) struct ArchiveLimits {
     pub(crate) max_entries: u64,
 }
 impl ArchiveLimits {
-    const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         max_compressed_bytes: 64 * 1024 * 1024,
         max_total_unpacked_bytes: 256 * 1024 * 1024,
         max_file_bytes: 64 * 1024 * 1024,

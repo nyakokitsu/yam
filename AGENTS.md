@@ -16,7 +16,8 @@ Implemented: `.yampkg` pack/validate/install/remove, SQLite state, exclusive
 `$YAM_RUN/yam.lock`, rollback of a failed transaction, `conflicts`/`replaces`
 handling on install, registries (`registry`, `search`, `info`, `plan`),
 signed self-`update`, `doctor`, `repair`, `which`, `files`, Entware detection
-and listing, service declarations (stored and shown by `service list`).
+and listing, service declarations (stored and shown by `service list`),
+PC-side publication rules (`yam-publish check|pack|release`).
 
 Planned (not implemented): package hooks (`preinstall`, `postinstall`,
 `upgrade`), triggers, the service supervisor, `YAM_*` hook/service
@@ -46,15 +47,19 @@ SQLite, OTA firmware comparison at boot.
   Commands: `install`, `remove`, `list`, `files`, `which`, `doctor`,
   `repair`, `update`, `entware status|list`, `service list`,
   `registry list|add|remove`, `search`, `info`, `plan`.
-- `src/bin/yam_publish.rs` — PC publisher: `pack`, `publish`, `release`.
+- `src/bin/yam_publish.rs` — PC publisher: `check`, `pack`, `publish`,
+  `release`.
 - `src/bin/yam_sign_update.rs` — update signing tool.
 - `src/lib.rs` — library root.
+- `src/publish/` — PC-side publishing: `rules.rs` (local publication rules,
+  codes `PKG00N`), later credentials and the registry API client.
 - `src/v2/` — package manager: `mod.rs`, `core.rs` (includes `manager.rs` via
   `include!`), `core_tests.rs`, `package.rs`, `registry.rs`, `update.rs`,
   `version.rs`.
 - `platforms/` — platform profiles; add one YAML file per supported target.
 - `docs/README.md` (catalogue), `docs/CLI.md`, `docs/PACKAGING.md`,
-  `docs/PLATFORMS.md`, `docs/REGISTRY.md` — public documentation.
+  `docs/PLATFORMS.md`, `docs/REGISTRY.md`, `docs/PUBLISHING-RULES.md` — public
+  documentation.
 - `install.sh` / `install.ps1` — deployment scripts. They write the Micro boot
   hook `/etc/init.d/S99yam`; `--remove-old` also removes the legacy hook and
   `/data/quazar/yam`. `--uninstall`/`-Uninstall` removes `$YAM_ROOT` only when
@@ -118,6 +123,24 @@ Before committing, require a clean `git diff --check`. Never commit `target/`.
 - Target `any` is only for target-independent payloads. Native code must name
   one or more concrete platform profiles. YAM cannot verify this; it is an
   author rule.
+
+### Publication rules
+
+- Published combinations of `(name, version, target)` are immutable. The
+  registry enforces this; the client must report a conflict and tell the author
+  to bump SemVer, never retry the same upload.
+- `src/publish/rules.rs` is the client-side mirror of the publication
+  contract. Rule codes `PKG001`–`PKG011` are stable and documented in
+  `docs/PUBLISHING-RULES.md`; do not renumber them.
+- Client rules are convenience, not a trust boundary. Every rule they check
+  must also be enforced by the registry when it accepts an upload.
+- Local rules must not drift from `Manager::pack`/`validate_manifest`:
+  rejecting something `pack` accepts is a bug unless the stricter rule is
+  documented and intentional.
+- `pack` resolves payload sources through `canonicalize` and refuses a path
+  that escapes the package source directory.
+- Do not add secret detection that logs the matching value; report only the
+  file path and the kind of secret.
 
 ### Archive safety
 

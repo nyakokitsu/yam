@@ -6,6 +6,7 @@ use reqwest::{blocking::Client, header::HeaderValue};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, time::Duration};
+use yam::publish::rules;
 use yam::v2::{Manager, PlatformProfile};
 
 const DEFAULT_UPLOAD_URL: &str = "https://repo.yse.wtf/api/v2/upload";
@@ -22,12 +23,31 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CommandKind {
+    /// Check publication rules without building an artifact.
+    Check(CheckArgs),
     /// Build a .yampkg with a host YAM CLI.
     Pack(PackArgs),
     /// Sign and upload an already-built .yampkg.
     Publish(PublishArgs),
     /// Build, then sign and upload one target artifact.
     Release(ReleaseArgs),
+}
+
+#[derive(Args, Clone)]
+struct CheckArgs {
+    /// Directory containing yam.yaml.
+    #[arg(long, default_value = ".")]
+    source: PathBuf,
+    /// Directory containing platform YAML profiles.
+    #[arg(long, env = "YAM_PROFILES", default_value = "platforms")]
+    profiles: PathBuf,
+    /// Platform ID from the profiles directory. Defaults to the concrete
+    /// target in yam.yaml when it declares exactly one.
+    #[arg(long, env = "YAM_PLATFORM")]
+    platform: Option<String>,
+    /// Print a machine-readable report.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Clone)]
@@ -94,12 +114,30 @@ struct SourceManifest {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        CommandKind::Check(args) => enforce_rules(
+            &args.source,
+            &args.profiles,
+            args.platform.as_deref(),
+            args.json,
+        ),
         CommandKind::Pack(args) => {
+            enforce_rules(
+                &args.source,
+                &args.profiles,
+                args.platform.as_deref(),
+                false,
+            )?;
             pack(&args)?;
             Ok(())
         }
         CommandKind::Publish(args) => publish(&args),
         CommandKind::Release(args) => {
+            enforce_rules(
+                &args.pack.source,
+                &args.pack.profiles,
+                args.pack.platform.as_deref(),
+                false,
+            )?;
             let target = pack(&args.pack)?;
             publish(&PublishArgs {
                 artifact: args.pack.output.clone(),
@@ -111,6 +149,60 @@ fn main() -> Result<()> {
             })
         }
     }
+}
+
+/// Evaluate the local publication rules and print every violation. `pack`,
+/// `release` and `check` share this so an author sees the same report no
+/// matter which entry point they use.
+fn enforce_rules(
+    source: &std::path::Path,
+    profiles: &std::path::Path,
+    platform: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let report = rules::check(source, profiles, platform)?;
+    if json {
+        let violations = report
+            .violations
+            .iter()
+            .map(|violation| {
+                serde_json::json!({"code": violation.code, "message": violation.message})
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ok": report.ok(),
+                "name": report.name,
+                "version": report.version,
+                "targets": report.targets,
+                "violations": violations,
+                "notes": report.notes,
+            }))?
+        );
+    } else {
+        for violation in &report.violations {
+            eprintln!("error[{}]: {}", violation.code, violation.message);
+        }
+        for note in &report.notes {
+            eprintln!("note: {note}");
+        }
+        if report.ok() {
+            println!(
+                "{} {} passes publication rules for {}.",
+                report.name,
+                report.version,
+                report.targets.join(", ")
+            );
+        }
+    }
+    if !report.ok() {
+        bail!(
+            "publication refused: {} rule violation(s); see docs/PUBLISHING-RULES.md",
+            report.violations.len()
+        )
+    }
+    Ok(())
 }
 
 fn pack(args: &PackArgs) -> Result<String> {

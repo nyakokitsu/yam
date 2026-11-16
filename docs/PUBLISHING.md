@@ -23,6 +23,17 @@ cargo build --release --locked --bin yam-publish
 `yam-publish` — PC-инструмент. Он создаёт `.yampkg`, подписывает публикацию и
 не устанавливается на колонку.
 
+Перед сборкой полезно прогнать проверку правил публикации: она не пишет архив
+и перечисляет всё, что реестр отклонит.
+
+```sh
+yam-publish check --source ../my-player
+```
+
+Полный список правил и кодов ошибок — в [PUBLISHING-RULES.md](PUBLISHING-RULES.md).
+Те же проверки выполняются автоматически в `pack` и `release`; `publish`
+загружает уже собранный архив и на них не полагается.
+
 ## 1. Создайте namespace и token
 
 1. Откройте [repo.yse.wtf](https://repo.yse.wtf/), войдите через GitHub.
@@ -85,6 +96,12 @@ cargo build --release --target aarch64-unknown-linux-musl
 ## 3. Сначала проверьте архив локально
 
 ```sh
+yam-publish check --source ../my-player
+```
+
+Затем соберите и проверьте установку в отдельном корне:
+
+```sh
 ./target/release/yam-publish pack \
   --profiles platforms \
   --source ../my-player \
@@ -131,9 +148,10 @@ YAM_AUTHOR_KEY_FILE="$HOME/Keys/yam-author-private-key.pem" \
 Параметры инструмента:
 
 ```text
+yam-publish check    # проверить правила публикации, ничего не собирая
 yam-publish pack     # только создать .yampkg
 yam-publish publish  # подписать и отправить существующий .yampkg
-yam-publish release  # pack + publish
+yam-publish release  # check + pack + publish
 ```
 
 Для другого сервера публикации укажите endpoint явно:
