@@ -160,9 +160,21 @@ impl Manager {
         };
         let mut payload = Vec::<(String, PathBuf)>::new();
         let mut hashes = BTreeMap::new();
+        let source_root = source_dir
+            .canonicalize()
+            .with_context(|| format!("resolve package source {}", source_dir.display()))?;
         for (destination, template) in &source.files {
             validate_payload_path(destination)?;
             let source_path = source_dir.join(expand(template, profile));
+            let source_path = source_path
+                .canonicalize()
+                .with_context(|| format!("resolve payload source {template:?}"))?;
+            if !source_path.starts_with(&source_root) {
+                bail!(
+                    "payload source {template:?} resolves outside the package source directory ({})",
+                    source_path.display()
+                )
+            }
             if source_path.is_dir() {
                 if !destination.ends_with('/') {
                     bail!("directory source {template:?} requires a destination ending in /")

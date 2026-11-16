@@ -20,31 +20,66 @@ jobs:
           cargo build --release --locked --bin yam-publish
           mkdir dist
           cp target/release/yam-publish dist/yam-publish-aarch64-apple-darwin
+      - name: Build desktop CLI
+        run: |
+          cargo build --release --locked --bin yam
+          cp target/release/yam dist/yam-aarch64-apple-darwin
       - uses: actions/upload-artifact@v4
         with:
           name: yam-publish-aarch64-apple-darwin
           path: dist/yam-publish-aarch64-apple-darwin
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-yam-aarch64-apple-darwin
+          path: dist/yam-aarch64-apple-darwin
+          if-no-files-found: error
   publisher-windows:
-    name: Build yam-publish for Windows x64
+    name: Build yam-publish and desktop yam for Windows x64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build publisher
+      - name: Build publisher and desktop CLI
         shell: pwsh
         run: |
-          cargo build --release --locked --bin yam-publish
+          cargo build --release --locked --bin yam-publish --bin yam
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/yam-publish.exe dist/yam-publish-x86_64-pc-windows-msvc.exe
+          Copy-Item target/release/yam.exe dist/yam-x86_64-pc-windows-msvc.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-yam-x86_64-pc-windows-msvc.exe
+          path: dist/yam-x86_64-pc-windows-msvc.exe
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: yam-publish-x86_64-pc-windows-msvc.exe
           path: dist/yam-publish-x86_64-pc-windows-msvc.exe
           if-no-files-found: error
+  desktop-linux:
+    name: Build desktop yam for Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build desktop CLI
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE":/home/rust/src \
+            -w /home/rust/src \
+            messense/rust-musl-cross:x86_64-musl \
+            cargo build --release --locked --bin yam
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/yam dist/yam-x86_64-unknown-linux-musl
+          chmod 0755 dist/yam-x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-yam-x86_64-unknown-linux-musl
+          path: dist/yam-x86_64-unknown-linux-musl
+          if-no-files-found: error
   release:
     name: Build and publish release
-    needs: [publisher-macos, publisher-windows]
+    needs: [publisher-macos, publisher-windows, desktop-linux]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -75,6 +110,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: yam-publish-*
+          path: dist
+          merge-multiple: true
+      - name: Download desktop CLI assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-yam-*
           path: dist
           merge-multiple: true
       - name: Build speaker CLI and Linux publisher assets
@@ -121,11 +162,15 @@ jobs:
           cp dist/yam-update-aarch64-unknown-linux-musl.json.sig dist/yam-update.json.sig
           (cd dist && sha256sum \
             yam-aarch64-unknown-linux-musl yam-armv7-unknown-linux-musleabihf \
+            yam-x86_64-unknown-linux-musl yam-x86_64-pc-windows-msvc.exe \
+            yam-aarch64-apple-darwin \
             yam-publish-x86_64-unknown-linux-musl yam-publish-aarch64-unknown-linux-musl \
             yam-publish-armv7-unknown-linux-musleabihf yam-publish-aarch64-apple-darwin \
             yam-publish-x86_64-pc-windows-msvc.exe > SHA256SUMS)
           gh release create "${{ steps.version.outputs.tag }}" \
             dist/yam-aarch64-unknown-linux-musl dist/yam-armv7-unknown-linux-musleabihf \
+            dist/yam-x86_64-unknown-linux-musl dist/yam-x86_64-pc-windows-msvc.exe \
+            dist/yam-aarch64-apple-darwin \
             dist/yam-publish-x86_64-unknown-linux-musl dist/yam-publish-aarch64-unknown-linux-musl \
             dist/yam-publish-armv7-unknown-linux-musleabihf dist/yam-publish-aarch64-apple-darwin \
             dist/yam-publish-x86_64-pc-windows-msvc.exe \

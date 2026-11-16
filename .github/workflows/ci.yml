@@ -43,3 +43,12 @@ jobs:
           if-no-files-found: error
           path: |
             target/aarch64-unknown-linux-musl/release/yam
+  desktop-windows:
+    name: Check desktop CLI on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check publishing and station binaries
+        run: cargo check --locked --bin yam --bin yam-publish

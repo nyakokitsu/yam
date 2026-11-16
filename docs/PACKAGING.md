@@ -23,8 +23,11 @@ files:
 
 ```sh
 cargo build --release --target aarch64-unknown-linux-musl
-yam-publish pack --source . --output hello.yampkg
+yam pack --source . --output hello.yampkg
 ```
+
+`yam-publish pack` — тот же вызов для совместимости. Обе команды сначала
+проверяют [правила публикации](PUBLISHING-RULES.md).
 
 `.yampkg` — архив `tar.zst`. YAM сам создаёт `MANIFEST.yaml` и хеши файлов.
 Не редактируйте архив вручную.
@@ -46,9 +49,10 @@ Unix staging с явно заданными правами. Хеш/подпис�
 их нужно переустановить транзакцией YAM. `doctor` проверяет ссылки и хеши, но
 не executable-биты; `repair` не является средством исправления mode bits.
 
-`yam-publish` берёт платформу из `YAM_PLATFORM`, если она задана. Иначе он
-выбирает единственную конкретную платформу из `targets` в `yam.yaml`. Для
-`targets: [any]` или нескольких платформ укажите `--platform <id>`.
+`yam-publish`/`yam` берёт платформу из `YAM_PLATFORM`, если она задана.
+Иначе выбирается единственная конкретная платформа из `targets` в `yam.yaml`.
+Для `targets: [any]` или нескольких платформ укажите `--platform <id>`
+(в `yam release` несколько платформ собираются автоматически).
 
 Проверьте пакет в отдельном каталоге:
 
