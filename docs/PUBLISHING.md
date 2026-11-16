@@ -163,10 +163,21 @@ yam-publish publish ... --upload-url https://registry.example/api/v2/upload
 Это **не** client URL `/v2`, который пользователи добавляют через `yam registry
 add`; upload endpoint выдаёт registry.
 
-## 5. Проверьте публикацию как пользователь
+## 5. Дождитесь модерации и проверьте публикацию
 
-После успешного ответа registry дождитесь обновления каталога, затем на чистом
-YAM root выполните:
+Загрузка не делает версию видимой сразу: новая версия попадает в очередь
+модерации. `publish` печатает `submission id`; следить за ним можно так:
+
+```sh
+yam-publish status sub_01JABCDEF --watch
+yam-publish status sub_01JABCDEF --watch --json   # по строке JSON на переход
+```
+
+`pending → in_review → approved | rejected`; при отказе печатается причина.
+Тот же режим доступен сразу при публикации: `release ... --wait`.
+
+После `approved` (или `published`) дождитесь обновления каталога, затем на
+чистом YAM root выполните:
 
 ```sh
 yam search player
@@ -174,6 +185,10 @@ yam plan alice/player
 yam install alice/player
 yam list
 ```
+
+Контракт endpoint'ов модерации — в [REGISTRY-API.md](REGISTRY-API.md).
+Старые реестры без модерации отвечают без `submission id`; клиент считает
+артефакт опубликованным и предупреждает, что следить не за чем.
 
 Опубликованная комбинация имени, версии и target неизменяема. Если нашли ошибку,
 увеличьте SemVer-версию, пересоберите и выпустите новый artifact — не

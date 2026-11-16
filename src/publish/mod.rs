@@ -5,4 +5,6 @@
 //! `client`, credentials only in `credentials`, and the publication rules are
 //! pure local checks in `rules`.
 
+pub mod client;
 pub mod rules;
+pub mod sign;

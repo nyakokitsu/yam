@@ -52,14 +52,15 @@ SQLite, OTA firmware comparison at boot.
 - `src/bin/yam_sign_update.rs` — update signing tool.
 - `src/lib.rs` — library root.
 - `src/publish/` — PC-side publishing: `rules.rs` (local publication rules,
-  codes `PKG00N`), later credentials and the registry API client.
+  codes `PKG00N`), `sign.rs` (author signature), `client.rs` (upload and
+  moderation status).
 - `src/v2/` — package manager: `mod.rs`, `core.rs` (includes `manager.rs` via
   `include!`), `core_tests.rs`, `package.rs`, `registry.rs`, `update.rs`,
   `version.rs`.
 - `platforms/` — platform profiles; add one YAML file per supported target.
 - `docs/README.md` (catalogue), `docs/CLI.md`, `docs/PACKAGING.md`,
-  `docs/PLATFORMS.md`, `docs/REGISTRY.md`, `docs/PUBLISHING-RULES.md` — public
-  documentation.
+  `docs/PLATFORMS.md`, `docs/REGISTRY.md`, `docs/PUBLISHING-RULES.md`,
+  `docs/REGISTRY-API.md` — public documentation.
 - `install.sh` / `install.ps1` — deployment scripts. They write the Micro boot
   hook `/etc/init.d/S99yam`; `--remove-old` also removes the legacy hook and
   `/data/quazar/yam`. `--uninstall`/`-Uninstall` removes `$YAM_ROOT` only when
