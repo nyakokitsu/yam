@@ -17,7 +17,8 @@ Implemented: `.yampkg` pack/validate/install/remove, SQLite state, exclusive
 handling on install, registries (`registry`, `search`, `info`, `plan`),
 signed self-`update`, `doctor`, `repair`, `which`, `files`, Entware detection
 and listing, service declarations (stored and shown by `service list`),
-PC-side publication rules (`yam-publish check|pack|release`).
+PC-side publication rules and publishing (`check|pack|publish|release`),
+moderation status polling and the local credentials store (`auth`).
 
 Planned (not implemented): package hooks (`preinstall`, `postinstall`,
 `upgrade`), triggers, the service supervisor, `YAM_*` hook/service
@@ -44,17 +45,18 @@ SQLite, OTA firmware comparison at boot.
 ## Repository map
 
 - `src/bin/yam.rs` — user-facing CLI (clap). Global `--platform`, `--root`.
-  Commands: `install`, `remove`, `list`, `files`, `which`, `doctor`,
+  Station commands: `install`, `remove`, `list`, `files`, `which`, `doctor`,
   `repair`, `update`, `entware status|list`, `service list`,
-  `registry list|add|remove`, `search`, `info`, `plan`.
-- `src/bin/yam_publish.rs` — PC publisher: `check`, `pack`, `publish`,
-  `release`.
+  `registry list|add|remove`, `search`, `info`, `plan`. PC commands:
+  `check`, `pack`, `publish`, `release`, `status`, `auth`.
+- `src/bin/yam_publish.rs` — compatibility entry point for the same PC
+  commands (`check`, `pack`, `publish`, `release`, `status`, `auth`).
 - `src/bin/yam_sign_update.rs` — update signing tool.
 - `src/lib.rs` — library root.
 - `src/publish/` — PC-side publishing: `rules.rs` (local publication rules,
-  codes `PKG00N`), `sign.rs` (author signature), `client.rs` (upload and
-  moderation status), `cli.rs` (commands shared by `yam-publish` and desktop
-  `yam`: `check`, `pack`, `publish`, `release`, `status`).
+  codes `PKG00N`), `sign.rs` (author signature), `client.rs` (upload,
+  moderation status, optional `/whoami`), `credentials.rs` (token/key store),
+  `cli.rs` (commands shared by `yam-publish` and desktop `yam`).
 - `src/v2/` — package manager: `mod.rs`, `core.rs` (includes `manager.rs` via
   `include!`), `core_tests.rs`, `package.rs`, `registry.rs`, `update.rs`,
   `version.rs`.
@@ -72,7 +74,10 @@ SQLite, OTA firmware comparison at boot.
   base64-encoded (`… | base64 -d | sh`): Windows PowerShell 5.1 does not
   escape embedded double quotes in native arguments. Every read-write remount
   of `/` must restore read-only via a trap.
-- `.github/workflows/ci.yml`, `release.yml` — CI and release.
+- `.github/workflows/ci.yml`, `release.yml` — CI and release. Releases ship
+  station binaries plus desktop `yam` builds (`x86_64-unknown-linux-musl`,
+  `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`) and the matching
+  `yam-publish` assets.
 
 Do not place package payloads, target binaries, registry downloads, device
 dumps, logs, generated indexes, secrets, or credentials in the repository.
@@ -143,6 +148,26 @@ Before committing, require a clean `git diff --check`. Never commit `target/`.
   that escapes the package source directory.
 - Do not add secret detection that logs the matching value; report only the
   file path and the kind of secret.
+
+### Publishing and credentials
+
+- Publishing commands must work on a PC without `--platform`, a station root
+  or a profile. `src/bin/yam.rs` loads a profile only in the station branch;
+  do not make `Cli::parse` open a manager.
+- `yam-publish` and desktop `yam` share `src/publish/cli.rs`. Add a command
+  once there, not twice.
+- Credentials live outside the repository: `YAM_CONFIG_DIR`, `%APPDATA%\yam`
+  or `$XDG_CONFIG_HOME/yam`/`~/.config/yam`, written `0600` through a temporary
+  file. Never log, print, commit or package a token, and store only a key path
+  unless the author explicitly asks `--store-key`.
+- `YAM_UPLOAD_URL`, `YAM_PUBLISH_TOKEN` and `YAM_AUTHOR_KEY_FILE` are the CI
+  interface; flags override environment, environment overrides the store.
+- The moderation client is forward-compatible: unknown states stay
+  non-terminal, and a registry acknowledgement without a submission id is a
+  successful upload, not an error.
+- Desktop binaries are release assets for `x86_64-unknown-linux-musl`,
+  `x86_64-pc-windows-msvc` and `aarch64-apple-darwin`. Keep both binaries
+  compiling on Windows; CI has a Windows `cargo check` job.
 
 ### Archive safety
 

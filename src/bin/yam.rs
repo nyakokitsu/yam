@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
+use yam::publish::cli;
 use yam::v2::registry;
 use yam::v2::update::{self, UpdateResult};
 use yam::v2::{Manager, PlatformProfile};
@@ -13,9 +14,10 @@ use yam::v2::{Manager, PlatformProfile};
 #[derive(Parser)]
 #[command(name = "yam", about = "Y Application Manager")]
 struct Cli {
-    /// Platform profile ID, such as yandexmicro.
+    /// Platform profile ID, such as yandexmicro. Required for station
+    /// commands; publishing and auth commands run on a PC without it.
     #[arg(long, env = "YAM_PLATFORM")]
-    platform: String,
+    platform: Option<String>,
     /// Directory containing platform YAML profiles.
     #[arg(long, env = "YAM_PROFILES", default_value = "platforms")]
     profiles: PathBuf,
@@ -71,6 +73,18 @@ enum Command {
     Plan {
         package: String,
     },
+    /// Check publication rules of a package source directory (PC).
+    Check(cli::CheckArgs),
+    /// Build a .yampkg for one platform (PC).
+    Pack(cli::PackArgs),
+    /// Sign and upload an already-built .yampkg (PC).
+    Publish(cli::PublishArgs),
+    /// Build every declared target and publish the artifacts (PC).
+    Release(cli::ReleaseArgs),
+    /// Show the moderation state of a published artifact (PC).
+    Status(cli::StatusArgs),
+    /// Store or inspect registry credentials (PC).
+    Auth(cli::AuthArgs),
 }
 #[derive(Subcommand)]
 enum EntwareCommand {
@@ -96,17 +110,46 @@ enum RegistryCommand {
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let profile = PlatformProfile::load(&cli.profiles, &cli.platform)?;
-    let root = cli.root.unwrap_or_else(|| profile.paths.root.clone());
+    let Cli {
+        platform,
+        profiles,
+        root,
+        registry,
+        command,
+    } = Cli::parse();
+    match command {
+        Command::Check(args) => return cli::check(&args),
+        Command::Pack(args) => return cli::pack(&args),
+        Command::Publish(args) => return cli::publish(&args),
+        Command::Release(args) => return cli::release(&args),
+        Command::Status(args) => return cli::status(&args),
+        Command::Auth(args) => return cli::auth(&args),
+        command => station(platform, profiles, root, registry, command),
+    }
+}
+
+/// Commands that need an installed station profile. Parsing stays global so
+/// `yam --platform X install` keeps working, but the profile is loaded only
+/// here: a desktop `yam` must not require a station to publish a package.
+fn station(
+    platform: Option<String>,
+    profiles: PathBuf,
+    root: Option<PathBuf>,
+    registry_name: String,
+    command: Command,
+) -> Result<()> {
+    let platform =
+        platform.context("--platform (or YAM_PLATFORM) is required for station commands")?;
+    let profile = PlatformProfile::load(&profiles, &platform)?;
+    let root = root.unwrap_or_else(|| profile.paths.root.clone());
     let mut manager = Manager::open(root, profile)?;
-    match cli.command {
+    match command {
         Command::Install { package, yes } => {
             let manifest = if Path::new(&package).is_file() {
                 manager.install(Path::new(&package), yes)?
             } else {
                 let (name, version) = split_package_version(&package)?;
-                let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+                let selected = registry::registry(&manager_root(&manager), &registry_name)?;
                 install_registry_graph(&mut manager, &selected, name, version, yes)?
             };
             println!(
@@ -135,7 +178,7 @@ fn main() -> Result<()> {
         Command::Doctor => {
             let problems = manager.doctor()?;
             if problems.is_empty() {
-                println!("Состояние пакетов в порядке.");
+                println!("?????????????????? ?????????????? ?? ??????????????.");
             } else {
                 for problem in problems {
                     eprintln!("problem: {problem}");
@@ -153,12 +196,16 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Update => match update::apply()? {
-            UpdateResult::Current(version) => {
-                println!("Уже установлена актуальная версия {version}.")
+        Command::Update => {
+            match update::apply()? {
+                UpdateResult::Current(version) => {
+                    println!("?????? ?????????????????????? ???????????????????? ???????????? {version}.")
+                }
+                UpdateResult::Updated(version) => {
+                    println!("?????????????????????? ???????????????????? {version}.")
+                }
             }
-            UpdateResult::Updated(version) => println!("Установлено обновление {version}."),
-        },
+        }
         Command::Entware { command } => match command {
             EntwareCommand::Status => println!(
                 "{}",
@@ -203,7 +250,7 @@ fn main() -> Result<()> {
             }
         },
         Command::Search { query } => {
-            let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+            let selected = registry::registry(&manager_root(&manager), &registry_name)?;
             for package in registry::catalogue(&selected)?
                 .packages
                 .into_iter()
@@ -220,7 +267,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Info { name } => {
-            let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+            let selected = registry::registry(&manager_root(&manager), &registry_name)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&registry::package_index(&selected, &name)?)?
@@ -228,7 +275,7 @@ fn main() -> Result<()> {
         }
         Command::Plan { package } => {
             let (name, version) = split_package_version(&package)?;
-            let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+            let selected = registry::registry(&manager_root(&manager), &registry_name)?;
             let installed = manager.installed_snapshot()?;
             let mut source = registry::LiveSource::new(&selected);
             let packages =
@@ -239,6 +286,14 @@ fn main() -> Result<()> {
                     package.name, package.version, package.artifact.url
                 );
             }
+        }
+        Command::Check(_)
+        | Command::Pack(_)
+        | Command::Publish(_)
+        | Command::Release(_)
+        | Command::Status(_)
+        | Command::Auth(_) => {
+            unreachable!("publishing commands are dispatched before station setup")
         }
     }
     Ok(())
@@ -332,4 +387,23 @@ fn split_package_version(value: &str) -> Result<(&str, Option<&str>)> {
         bail!("package name must be name or name@version")
     }
     Ok((name, version))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publishing_commands_parse_without_a_platform() {
+        let cli = Cli::try_parse_from(["yam", "auth", "status"]).unwrap();
+        assert!(cli.platform.is_none());
+        assert!(matches!(cli.command, Command::Auth(_)));
+    }
+
+    #[test]
+    fn station_commands_still_accept_the_platform_flag() {
+        let cli = Cli::try_parse_from(["yam", "--platform", "yandexmicro", "list"]).unwrap();
+        assert_eq!(cli.platform.as_deref(), Some("yandexmicro"));
+        assert!(matches!(cli.command, Command::List));
+    }
 }

@@ -52,6 +52,17 @@ export YAM_AUTHOR_KEY_FILE="$HOME/Keys/yam-author-private-key.pem"
 export YAM_PUBLISH_TOKEN='вставьте-токен-сюда'
 ```
 
+Либо сохраните оба значения один раз в конфиг пользователя (файл создаётся с
+правами `0600`; `--store-key` копирует PEM в каталог конфигурации):
+
+```sh
+yam auth login --registry official \
+  --token "$YAM_PUBLISH_TOKEN" \
+  --key ~/Keys/yam-author-private-key.pem \
+  --store-key
+yam auth status --registry official
+```
+
 Для CI поместите оба значения в секреты CI. Никогда не печатайте token в логе.
 
 ## 2. Подготовьте исходники пакета
@@ -118,14 +129,15 @@ yam-publish check --source ../my-player
 ## 4. Сборка и публикация одной командой
 
 `release` собирает **каждый** target из `yam.yaml`, подписывает и загружает
-артефакты. Указывать output и target вручную не нужно:
+артефакты. Указывать output и target вручную не нужно; токен и ключ берутся из
+`auth login` или переменных окружения:
 
 ```sh
-yam-publish release \
-  --source ../my-player \
-  --token "$YAM_PUBLISH_TOKEN" \
-  --key "$YAM_AUTHOR_KEY_FILE"
+yam release --source ../my-player
 ```
+
+Тот же сценарий доступен через PC-инструмент `yam-publish release` (флаги
+совпадают).
 
 Для `../my-player` с `targets: [yandexmini_2]` появится
 `dist/player-1.0.0-yandexmini_2.yampkg`, и он сразу уйдёт в реестр. Если

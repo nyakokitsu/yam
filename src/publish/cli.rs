@@ -4,14 +4,15 @@
 //! and command bodies here avoids a second, drifting implementation and lets
 //! the station binary stay free of publishing code paths people never call.
 
-use crate::publish::{client, rules, sign};
+use crate::publish::{client, credentials, rules, sign};
 use crate::v2::{Manager, PlatformProfile};
 use anyhow::{bail, Context, Result};
-use clap::Args;
+use clap::{Args, Subcommand};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
     fs,
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -61,9 +62,12 @@ pub struct PublishArgs {
     /// Target used for this artifact.
     #[arg(long)]
     pub target: String,
+    /// Stored credentials entry to use; defaults to `official`.
+    #[arg(long, default_value = "official")]
+    pub registry: String,
     /// Registry upload endpoint, not the client /v2 index URL.
-    #[arg(long, env = "YAM_UPLOAD_URL", default_value = client::DEFAULT_UPLOAD_URL)]
-    pub upload_url: String,
+    #[arg(long, env = "YAM_UPLOAD_URL")]
+    pub upload_url: Option<String>,
     /// Publish token created in the registry profile. Falls back to
     /// YAM_PUBLISH_TOKEN, then to `yam-publish auth login`.
     #[arg(long, env = "YAM_PUBLISH_TOKEN")]
@@ -98,9 +102,12 @@ pub struct ReleaseArgs {
     /// Build and validate every artifact, but do not upload.
     #[arg(long)]
     pub dry_run: bool,
+    /// Stored credentials entry to use; defaults to `official`.
+    #[arg(long, default_value = "official")]
+    pub registry: String,
     /// Registry upload endpoint, not the client /v2 index URL.
-    #[arg(long, env = "YAM_UPLOAD_URL", default_value = client::DEFAULT_UPLOAD_URL)]
-    pub upload_url: String,
+    #[arg(long, env = "YAM_UPLOAD_URL")]
+    pub upload_url: Option<String>,
     /// Publish token created in the registry profile. Falls back to
     /// YAM_PUBLISH_TOKEN, then to `yam-publish auth login`.
     #[arg(long, env = "YAM_PUBLISH_TOKEN")]
@@ -118,9 +125,12 @@ pub struct ReleaseArgs {
 pub struct StatusArgs {
     /// Submission id returned by `publish`.
     pub id: String,
+    /// Stored credentials entry to use; defaults to `official`.
+    #[arg(long, default_value = "official")]
+    pub registry: String,
     /// Registry upload endpoint, not the client /v2 index URL.
-    #[arg(long, env = "YAM_UPLOAD_URL", default_value = client::DEFAULT_UPLOAD_URL)]
-    pub upload_url: String,
+    #[arg(long, env = "YAM_UPLOAD_URL")]
+    pub upload_url: Option<String>,
     /// Publish token created in the registry profile. Falls back to
     /// YAM_PUBLISH_TOKEN, then to `yam-publish auth login`.
     #[arg(long, env = "YAM_PUBLISH_TOKEN")]
@@ -137,6 +147,71 @@ pub struct StatusArgs {
     /// Print one JSON object per state instead of human-readable lines.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct AuthArgs {
+    #[command(subcommand)]
+    pub command: AuthCommand,
+}
+
+#[derive(Subcommand, Clone)]
+pub enum AuthCommand {
+    /// Save a publish token and author key for a registry.
+    Login(AuthLoginArgs),
+    /// Show the stored credentials for a registry.
+    Status(AuthStatusArgs),
+    /// Remove the stored credentials for a registry.
+    Logout(AuthLogoutArgs),
+}
+
+#[derive(Args, Clone)]
+pub struct AuthLoginArgs {
+    /// Stored credentials entry; defaults to `official`.
+    #[arg(long, default_value = "official")]
+    pub registry: String,
+    /// Registry upload endpoint, not the client /v2 index URL.
+    #[arg(long, env = "YAM_UPLOAD_URL")]
+    pub upload_url: Option<String>,
+    /// Publish token. Prefer YAM_PUBLISH_TOKEN in CI; without it the token is
+    /// read from stdin.
+    #[arg(long, env = "YAM_PUBLISH_TOKEN")]
+    pub token: Option<String>,
+    /// PEM PKCS#8 Ed25519 private key downloaded when claiming the namespace.
+    #[arg(long, env = "YAM_AUTHOR_KEY_FILE")]
+    pub key: Option<PathBuf>,
+    /// Copy the key into the config directory instead of remembering its path.
+    #[arg(long)]
+    pub store_key: bool,
+    /// Save without calling the registry account endpoint.
+    #[arg(long)]
+    pub no_verify: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct AuthStatusArgs {
+    /// Stored credentials entry; defaults to `official`.
+    #[arg(long, default_value = "official")]
+    pub registry: String,
+    /// Registry upload endpoint, not the client /v2 index URL.
+    #[arg(long, env = "YAM_UPLOAD_URL")]
+    pub upload_url: Option<String>,
+    /// Ask the registry to verify the token and show the account.
+    #[arg(long)]
+    pub verify: bool,
+    /// Print one JSON object instead of human-readable lines.
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct AuthLogoutArgs {
+    /// Stored credentials entry; defaults to `official`.
+    #[arg(long, default_value = "official")]
+    pub registry: String,
+    /// Remove every stored registry.
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Deserialize)]
@@ -198,13 +273,17 @@ pub fn publish(args: &PublishArgs) -> Result<()> {
     if artifact.is_empty() {
         bail!("artifact is empty")
     }
-    let token = resolve_token(args.token.as_deref())?;
-    let key_path = resolve_key(args.key.as_deref())?;
+    let resolved = credentials::resolve(
+        &args.registry,
+        args.upload_url.as_deref(),
+        args.token.as_deref(),
+        args.key.as_deref(),
+    )?;
     let sha256 = format!("{:x}", Sha256::digest(&artifact));
     let submission = upload(
-        &args.upload_url,
-        &token,
-        &key_path,
+        &resolved.upload_url,
+        &resolved.token,
+        &resolved.key,
         &manifest,
         &args.target,
         &args.artifact,
@@ -213,12 +292,16 @@ pub fn publish(args: &PublishArgs) -> Result<()> {
     )?;
     match submission {
         Some(submission) => {
-            println!(
-                "Check it with `yam-publish status {} --watch`.",
-                submission.id
-            );
+            println!("Check it with `yam status {} --watch`.", submission.id);
             if args.wait {
-                follow(&args.upload_url, &token, &submission.id, 5, 900, false)?;
+                follow(
+                    &resolved.upload_url,
+                    &resolved.token,
+                    &submission.id,
+                    5,
+                    900,
+                    false,
+                )?;
             }
         }
         None => {
@@ -233,10 +316,14 @@ pub fn publish(args: &PublishArgs) -> Result<()> {
 }
 
 pub fn status(args: &StatusArgs) -> Result<()> {
-    let token = resolve_token(args.token.as_deref())?;
+    let (upload_url, token, _) = credentials::resolve_token_only(
+        &args.registry,
+        args.upload_url.as_deref(),
+        args.token.as_deref(),
+    )?;
     if args.watch {
         follow(
-            &args.upload_url,
+            &upload_url,
             &token,
             &args.id,
             args.interval,
@@ -245,7 +332,7 @@ pub fn status(args: &StatusArgs) -> Result<()> {
         )?;
         return Ok(());
     }
-    let submission = client::status(&args.upload_url, &token, &args.id)?;
+    let submission = client::status(&upload_url, &token, &args.id)?;
     print_submission(&submission, args.json);
     if submission.state == client::ModerationState::Rejected {
         bail!(
@@ -276,15 +363,15 @@ pub fn release(args: &ReleaseArgs) -> Result<()> {
         .unwrap_or_else(|| args.source.join("dist"));
     fs::create_dir_all(&output_dir).with_context(|| format!("create {}", output_dir.display()))?;
 
-    let token = if args.dry_run {
+    let resolved = if args.dry_run {
         None
     } else {
-        Some(resolve_token(args.token.as_deref())?)
-    };
-    let key_path = if args.dry_run {
-        None
-    } else {
-        Some(resolve_key(args.key.as_deref())?)
+        Some(credentials::resolve(
+            &args.registry,
+            args.upload_url.as_deref(),
+            args.token.as_deref(),
+            args.key.as_deref(),
+        )?)
     };
 
     let mut built = Vec::new();
@@ -317,14 +404,13 @@ pub fn release(args: &ReleaseArgs) -> Result<()> {
         return Ok(());
     }
 
-    let token = token.expect("token resolved outside dry-run");
-    let key_path = key_path.expect("key resolved outside dry-run");
+    let resolved = resolved.expect("credentials resolved outside dry-run");
     let mut queued = Vec::new();
     for (target, artifact, bytes, sha256) in &built {
         match upload(
-            &args.upload_url,
-            &token,
-            &key_path,
+            &resolved.upload_url,
+            &resolved.token,
+            &resolved.key,
             &manifest,
             target,
             artifact,
@@ -349,7 +435,7 @@ pub fn release(args: &ReleaseArgs) -> Result<()> {
     if args.wait && !queued.is_empty() {
         let mut failure = None;
         for id in &queued {
-            if let Err(error) = follow(&args.upload_url, &token, id, 5, 900, false) {
+            if let Err(error) = follow(&resolved.upload_url, &resolved.token, id, 5, 900, false) {
                 eprintln!("{error:#}");
                 failure.get_or_insert(error);
             }
@@ -490,6 +576,184 @@ fn upload(
     }
 }
 
+pub fn auth(args: &AuthArgs) -> Result<()> {
+    match &args.command {
+        AuthCommand::Login(args) => auth_login(args),
+        AuthCommand::Status(args) => auth_status(args),
+        AuthCommand::Logout(args) => auth_logout(args),
+    }
+}
+
+fn auth_login(args: &AuthLoginArgs) -> Result<()> {
+    let mut store = credentials::Store::load()?;
+    let existing = store.entry(&args.registry).cloned();
+    let upload_url = args
+        .upload_url
+        .clone()
+        .or_else(|| existing.as_ref().map(|entry| entry.upload_url.clone()))
+        .unwrap_or_else(|| client::DEFAULT_UPLOAD_URL.into());
+    let token = match args
+        .token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(token) => token.to_string(),
+        None => prompt_token()?,
+    };
+    let key = args
+        .key
+        .clone()
+        .or_else(|| existing.as_ref().and_then(|entry| entry.key_file.clone()))
+        .context(
+            "author key is required: pass --key <file> or set YAM_AUTHOR_KEY_FILE (the PEM downloaded when claiming the namespace)",
+        )?;
+    if !key.is_file() {
+        bail!("author key is not a file: {}", key.display())
+    }
+    let key_file = if args.store_key {
+        credentials::copy_key(&key, &args.registry)?
+    } else {
+        key.canonicalize().unwrap_or(key)
+    };
+    let mut login = existing.as_ref().and_then(|entry| entry.login.clone());
+    if !args.no_verify {
+        match client::whoami(&upload_url, &token)? {
+            client::WhoAmI::Known(account) => {
+                login = account.login.clone().or(login);
+                if account.namespaces.is_empty() {
+                    eprintln!("Token verified by the registry.");
+                } else {
+                    eprintln!("Token verified; namespaces: {}.", account.namespaces.join(", "));
+                }
+            }
+            client::WhoAmI::Unsupported => eprintln!(
+                "note: this registry does not expose /api/v2/whoami; the token was saved without verification"
+            ),
+        }
+    }
+    store.insert(
+        &args.registry,
+        credentials::StoredRegistry {
+            upload_url: upload_url.clone(),
+            token,
+            key_file: Some(key_file.clone()),
+            login: login.clone(),
+        },
+    );
+    store.save()?;
+    println!(
+        "Logged in to {} as {} (registry {}).",
+        host_of(&upload_url),
+        login.as_deref().unwrap_or("an unverified author"),
+        args.registry
+    );
+    println!("Author key: {}", key_file.display());
+    Ok(())
+}
+
+fn auth_status(args: &AuthStatusArgs) -> Result<()> {
+    let store = credentials::Store::load()?;
+    let entry = store.entry(&args.registry);
+    let upload_url = args
+        .upload_url
+        .clone()
+        .or_else(|| entry.map(|entry| entry.upload_url.clone()))
+        .unwrap_or_else(|| client::DEFAULT_UPLOAD_URL.into());
+    let token = entry
+        .map(|entry| entry.token.trim())
+        .filter(|value| !value.is_empty());
+    let mut login = entry.and_then(|entry| entry.login.clone());
+    if args.verify {
+        let token = token.context("no stored token to verify; run `yam auth login`")?;
+        match client::whoami(&upload_url, token)? {
+            client::WhoAmI::Known(account) => {
+                login = account.login.clone().or(login);
+                eprintln!("Token verified by the registry.");
+            }
+            client::WhoAmI::Unsupported => {
+                eprintln!("note: this registry does not expose /api/v2/whoami")
+            }
+        }
+    }
+    let key_file = entry.and_then(|entry| entry.key_file.clone());
+    let key_present = key_file.as_ref().is_some_and(|path| path.is_file());
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "registry": args.registry,
+                "upload_url": upload_url,
+                "token": token.map(credentials::fingerprint),
+                "key_file": key_file,
+                "key_present": key_present,
+                "login": login,
+            }))?
+        );
+    } else {
+        println!("registry {}", args.registry);
+        println!("upload   {upload_url}");
+        println!(
+            "token    {}",
+            token
+                .map(credentials::fingerprint)
+                .unwrap_or_else(|| "not stored".into())
+        );
+        println!(
+            "key      {}",
+            key_file
+                .as_ref()
+                .map(|path| format!(
+                    "{} ({})",
+                    path.display(),
+                    if key_present { "present" } else { "missing" }
+                ))
+                .unwrap_or_else(|| "not configured".into())
+        );
+        println!("login    {}", login.as_deref().unwrap_or("unknown"));
+    }
+    Ok(())
+}
+
+fn auth_logout(args: &AuthLogoutArgs) -> Result<()> {
+    let mut store = credentials::Store::load()?;
+    if args.all {
+        let count = store.registries.len();
+        store.registries.clear();
+        store.save()?;
+        println!("Removed {count} stored registry credential(s).");
+        return Ok(());
+    }
+    if !store.remove(&args.registry) {
+        bail!("no stored credentials for registry {:?}", args.registry)
+    }
+    store.save()?;
+    println!("Logged out of registry {}.", args.registry);
+    Ok(())
+}
+
+fn prompt_token() -> Result<String> {
+    if !io::stdin().is_terminal() {
+        bail!("publish token is required: pass --token or set YAM_PUBLISH_TOKEN")
+    }
+    eprintln!("Publish token (input is visible; prefer YAM_PUBLISH_TOKEN in CI):");
+    io::stderr().flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    let token = line.trim();
+    if token.is_empty() {
+        bail!("no token entered")
+    }
+    Ok(token.to_string())
+}
+
+fn host_of(upload_url: &str) -> String {
+    reqwest::Url::parse(upload_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| upload_url.to_string())
+}
+
 fn follow(
     upload_url: &str,
     token: &str,
@@ -537,19 +801,6 @@ fn follow(
         );
     }
     Ok(())
-}
-
-fn resolve_token(value: Option<&str>) -> Result<String> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value) => Ok(value.to_string()),
-        None => bail!("publish token is required: pass --token or set YAM_PUBLISH_TOKEN"),
-    }
-}
-
-fn resolve_key(value: Option<&Path>) -> Result<PathBuf> {
-    value
-        .map(Path::to_path_buf)
-        .context("author key is required: pass --key or set YAM_AUTHOR_KEY_FILE")
 }
 
 fn print_report(report: &rules::Report) {
@@ -671,7 +922,8 @@ mod tests {
             output_dir: Some(dir.path().join("dist")),
             output: None,
             dry_run: true,
-            upload_url: client::DEFAULT_UPLOAD_URL.into(),
+            registry: "official".into(),
+            upload_url: None,
             token: None,
             key: None,
             wait: false,

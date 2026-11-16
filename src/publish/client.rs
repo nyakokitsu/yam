@@ -126,6 +126,82 @@ fn client() -> Result<Client> {
         .context("create HTTP client")
 }
 
+/// Account information returned by `GET /api/v2/whoami`. The endpoint is
+/// optional: a registry without it still accepts uploads, and `auth login`
+/// saves the token without verification.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Account {
+    pub login: Option<String>,
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhoAmI {
+    Known(Account),
+    Unsupported,
+}
+
+pub fn whoami(upload_url: &str, token: &str) -> Result<WhoAmI> {
+    let url = format!("{}/whoami", api_base(upload_url)?);
+    let response = client()?
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .header("accept", "application/json")
+        .send()
+        .with_context(|| format!("request {url}"))?;
+    let status = response.status();
+    let body = response.text().unwrap_or_default();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(WhoAmI::Unsupported);
+    }
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        bail!(
+            "registry rejected the publish token ({status}): {}",
+            body.trim()
+        )
+    }
+    if !status.is_success() {
+        bail!(
+            "registry account request failed ({status}): {}",
+            body.trim()
+        )
+    }
+    let value: Value = serde_json::from_str(&body)
+        .with_context(|| format!("registry returned a non-JSON account document at {url}"))?;
+    Ok(WhoAmI::Known(parse_account(&value)))
+}
+
+fn parse_account(value: &Value) -> Account {
+    let account = value
+        .get("user")
+        .filter(|value| value.is_object())
+        .unwrap_or(value);
+    let login = string_at(account, &["login", "username", "name"]);
+    let namespaces = account
+        .get("namespaces")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| match entry {
+                    Value::String(name) => Some(name.clone()),
+                    Value::Object(_) => string_at(entry, &["name", "id", "namespace"]),
+                    _ => None,
+                })
+                .collect()
+        })
+        .or_else(|| {
+            string_at(account, &["namespace"])
+                .or_else(|| string_at(value, &["namespace"]))
+                .map(|namespace| vec![namespace])
+        })
+        .unwrap_or_default();
+    Account { login, namespaces }
+}
+
 /// Upload one artifact. The body is the archive itself; identity travels in
 /// headers so the registry can authenticate before buffering the body.
 pub fn upload(
@@ -431,6 +507,23 @@ mod tests {
     fn a_plain_text_acknowledgement_has_no_submission() {
         assert!(parse_submission("uploaded\n").is_none());
         assert!(parse_submission(r#"{"ok":true}"#).is_none());
+    }
+
+    #[test]
+    fn account_documents_parse_in_both_shapes() {
+        let account = parse_account(&serde_json::json!({
+            "login": "author",
+            "namespaces": ["author", {"name": "team"}]
+        }));
+        assert_eq!(account.login.as_deref(), Some("author"));
+        assert_eq!(account.namespaces, vec!["author", "team"]);
+
+        let account = parse_account(&serde_json::json!({
+            "user": {"username": "author"},
+            "namespace": "author"
+        }));
+        assert_eq!(account.login.as_deref(), Some("author"));
+        assert_eq!(account.namespaces, vec!["author"]);
     }
 
     #[test]

@@ -23,6 +23,8 @@ enum CommandKind {
     Release(cli::ReleaseArgs),
     /// Show the moderation state of a published artifact.
     Status(cli::StatusArgs),
+    /// Store or inspect registry credentials.
+    Auth(cli::AuthArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -32,5 +34,6 @@ fn main() -> anyhow::Result<()> {
         CommandKind::Publish(args) => cli::publish(&args),
         CommandKind::Release(args) => cli::release(&args),
         CommandKind::Status(args) => cli::status(&args),
+        CommandKind::Auth(args) => cli::auth(&args),
     }
 }

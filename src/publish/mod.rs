@@ -7,5 +7,6 @@
 
 pub mod cli;
 pub mod client;
+pub mod credentials;
 pub mod rules;
 pub mod sign;
