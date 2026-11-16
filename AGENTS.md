@@ -53,7 +53,8 @@ SQLite, OTA firmware comparison at boot.
 - `src/lib.rs` — library root.
 - `src/publish/` — PC-side publishing: `rules.rs` (local publication rules,
   codes `PKG00N`), `sign.rs` (author signature), `client.rs` (upload and
-  moderation status).
+  moderation status), `cli.rs` (commands shared by `yam-publish` and desktop
+  `yam`: `check`, `pack`, `publish`, `release`, `status`).
 - `src/v2/` — package manager: `mod.rs`, `core.rs` (includes `manager.rs` via
   `include!`), `core_tests.rs`, `package.rs`, `registry.rs`, `update.rs`,
   `version.rs`.

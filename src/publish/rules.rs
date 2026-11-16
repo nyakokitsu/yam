@@ -16,7 +16,7 @@ use crate::v2::package::{
     validate_version,
 };
 use crate::v2::PlatformProfile;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -109,7 +109,7 @@ pub fn check(source_dir: &Path, profiles: &Path, platform: Option<&str>) -> Resu
     }
     let multiple = resolved.len() > 1;
     for profile in &resolved {
-        let target = artifact_target(&source, profile);
+        let target = artifact_target(&source.targets, profile);
         let suffix = if multiple {
             format!(" [{}]", profile.id)
         } else {
@@ -135,10 +135,9 @@ pub fn check(source_dir: &Path, profiles: &Path, platform: Option<&str>) -> Resu
 
 /// The target string `Manager::pack` will write into `MANIFEST.yaml` for this
 /// profile. Kept in one place so the `any` rules describe the same artifact.
-pub fn artifact_target(source: &PackageSource, profile: &PlatformProfile) -> String {
-    if source.targets.iter().any(|target| target == &profile.id)
-        || source
-            .targets
+pub fn artifact_target(targets: &[String], profile: &PlatformProfile) -> String {
+    if targets.iter().any(|target| target == &profile.id)
+        || targets
             .iter()
             .any(|target| profile.aliases.iter().any(|alias| alias == target))
     {
@@ -146,6 +145,23 @@ pub fn artifact_target(source: &PackageSource, profile: &PlatformProfile) -> Str
     } else {
         "any".into()
     }
+}
+
+/// Validate the built archive against the compressed-size limit. Unpacked
+/// limits were already checked against the source files; the archive can still
+/// exceed the compressed ceiling through headers and metadata.
+pub fn verify_artifact(path: &Path) -> Result<()> {
+    let size = fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .len();
+    let limit = ArchiveLimits::DEFAULT.max_compressed_bytes;
+    if size > limit {
+        bail!(
+            "artifact {} is {size} bytes; the compressed archive limit is {limit}",
+            path.display()
+        )
+    }
+    Ok(())
 }
 
 fn check_identity(source: &PackageSource, checker: &mut Checker) {
@@ -968,6 +984,6 @@ mod tests {
         )
         .unwrap();
         let profile = PlatformProfile::load(&dir.path().join("profiles"), "newboard").unwrap();
-        assert_eq!(artifact_target(&source, &profile), "newboard");
+        assert_eq!(artifact_target(&source.targets, &profile), "newboard");
     }
 }

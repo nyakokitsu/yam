@@ -117,24 +117,37 @@ yam-publish check --source ../my-player
 
 ## 4. Сборка и публикация одной командой
 
-В репозитории YAM есть PC-инструмент `yam-publish`. Он:
-
-1. создаёт `.yampkg` из `yam.yaml`;
-2. читает имя и версию из `yam.yaml`;
-3. считает SHA-256 архива;
-4. подписывает `(name, version, target, sha256)` вашим Ed25519 key;
-5. отправляет архив и metadata в registry по HTTPS.
-
-Пример для исходников `../my-player`:
+`release` собирает **каждый** target из `yam.yaml`, подписывает и загружает
+артефакты. Указывать output и target вручную не нужно:
 
 ```sh
-./target/release/yam-publish release \
+yam-publish release \
   --source ../my-player \
-  --profiles platforms \
-  --output ../my-player/dist/player-yandexmini_2.yampkg \
   --token "$YAM_PUBLISH_TOKEN" \
   --key "$YAM_AUTHOR_KEY_FILE"
 ```
+
+Для `../my-player` с `targets: [yandexmini_2]` появится
+`dist/player-1.0.0-yandexmini_2.yampkg`, и он сразу уйдёт в реестр. Если
+targets несколько, будет собрано и загружено по артефакту на каждый.
+
+Проверить сборку без загрузки (token и ключ не нужны):
+
+```sh
+yam-publish release --source ../my-player --dry-run
+```
+
+Параметры:
+
+| Флаг | Назначение |
+| --- | --- |
+| `--source <каталог>` | Исходники с `yam.yaml`; по умолчанию `.` |
+| `--platform <id>` | Собрать только один target вместо всех |
+| `--output-dir <каталог>` | Куда писать архивы; по умолчанию `<source>/dist` |
+| `-o, --output <файл>` | Точный путь архива; только для одного target |
+| `--dry-run` | Собрать и проверить, не загружать |
+| `--wait` | Дождаться решения модерации по каждой заявке |
+| `--profiles <каталог>` | Профили платформ; по умолчанию `platforms` |
 
 Или используйте готовый shell-пример:
 
@@ -145,13 +158,14 @@ YAM_AUTHOR_KEY_FILE="$HOME/Keys/yam-author-private-key.pem" \
   ../my-player/dist/player-yandexmini_2.yampkg
 ```
 
-Параметры инструмента:
+Нижнеуровневые команды остаются для CI и отладки:
 
 ```text
 yam-publish check    # проверить правила публикации, ничего не собирая
 yam-publish pack     # только создать .yampkg
 yam-publish publish  # подписать и отправить существующий .yampkg
-yam-publish release  # check + pack + publish
+yam-publish release  # check + pack всех target + publish
+yam-publish status   # состояние заявки, --watch для живого слежения
 ```
 
 Для другого сервера публикации укажите endpoint явно:
