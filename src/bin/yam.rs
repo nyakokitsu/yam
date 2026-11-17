@@ -17,7 +17,7 @@ struct Cli {
     #[arg(long, env = "YAM_PLATFORM")]
     platform: String,
     /// Directory containing platform YAML profiles.
-    #[arg(long, env = "YAM_PROFILES", default_value = "platforms")]
+    #[arg(long, env = "YAM_PROFILES", default_value = "/data/yam/platforms")]
     profiles: PathBuf,
     /// Override the profile's persistent package root (useful for development).
     #[arg(long, env = "YAM_ROOT")]
