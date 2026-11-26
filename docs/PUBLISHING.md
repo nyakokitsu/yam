@@ -106,6 +106,9 @@ cargo build --release --target aarch64-unknown-linux-musl
 
 ## 3. Сначала проверьте архив локально
 
+Команды ниже запускайте из корня репозитория: `yam` берёт профили из
+`./platforms`, если не задан `--profiles`.
+
 ```sh
 yam-publish check --source ../my-player
 ```

@@ -18,9 +18,10 @@ struct Cli {
     /// commands; publishing and auth commands run on a PC without it.
     #[arg(long, env = "YAM_PLATFORM")]
     platform: Option<String>,
-    /// Directory containing platform YAML profiles.
-    #[arg(long, env = "YAM_PROFILES", default_value = "platforms")]
-    profiles: PathBuf,
+    /// Directory containing platform YAML profiles. Defaults to
+    /// `<root>/platforms`, `<yam binary dir>/../platforms`, then `./platforms`.
+    #[arg(long, env = "YAM_PROFILES")]
+    profiles: Option<PathBuf>,
     /// Override the profile's persistent package root (useful for development).
     #[arg(long, env = "YAM_ROOT")]
     root: Option<PathBuf>,
@@ -109,6 +110,29 @@ enum RegistryCommand {
     },
 }
 
+/// Picks the profiles directory: an explicit value always wins; otherwise the
+/// first existing of `<root>/platforms` (custom `YAM_ROOT`), `<exe dir>/../platforms`
+/// (installed layout `$YAM_ROOT/bin/yam`) and `./platforms` (source tree).
+/// When none exists, `./platforms` is returned so the load error names it.
+fn resolve_profiles_dir(
+    explicit: Option<PathBuf>,
+    root: Option<&Path>,
+    exe_dir: Option<&Path>,
+) -> PathBuf {
+    if let Some(dir) = explicit {
+        return dir;
+    }
+    let candidates = [
+        root.map(|root| root.join("platforms")),
+        exe_dir.map(|dir| dir.join("..").join("platforms")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|dir| dir.is_dir())
+        .unwrap_or_else(|| PathBuf::from("platforms"))
+}
+
 fn main() -> Result<()> {
     let matches = Cli::command().get_matches();
     let explicit = |m: &clap::ArgMatches, name| {
@@ -123,12 +147,18 @@ fn main() -> Result<()> {
         registry,
         command,
     } = Cli::from_arg_matches(&matches)?;
+    let exe = std::env::current_exe().ok();
+    let profiles = resolve_profiles_dir(
+        profiles,
+        root.as_deref(),
+        exe.as_deref().and_then(Path::parent),
+    );
     match command {
         Command::Check(mut args) => {
             if inherit("platform") {
                 args.platform = platform;
             }
-            if inherit("profiles") {
+            if !explicit(child, "profiles") {
                 args.profiles = profiles;
             }
             cli::check(&args)
@@ -137,7 +167,7 @@ fn main() -> Result<()> {
             if inherit("platform") {
                 args.platform = platform;
             }
-            if inherit("profiles") {
+            if !explicit(child, "profiles") {
                 args.profiles = profiles;
             }
             cli::pack(&args)
@@ -152,7 +182,7 @@ fn main() -> Result<()> {
             if inherit("platform") {
                 args.platform = platform;
             }
-            if inherit("profiles") {
+            if !explicit(child, "profiles") {
                 args.profiles = profiles;
             }
             if inherit("registry") {
@@ -457,5 +487,53 @@ mod tests {
         let cli = Cli::try_parse_from(["yam", "--platform", "yandexmicro", "list"]).unwrap();
         assert_eq!(cli.platform.as_deref(), Some("yandexmicro"));
         assert!(matches!(cli.command, Command::List));
+    }
+    use tempfile::tempdir;
+
+    #[test]
+    fn explicit_value_overrides_every_default() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir(tmp.path().join("platforms")).unwrap();
+        let explicit = PathBuf::from("/somewhere/else");
+        let got = resolve_profiles_dir(Some(explicit.clone()), Some(tmp.path()), Some(tmp.path()));
+        assert_eq!(got, explicit);
+    }
+
+    #[test]
+    fn custom_root_uses_its_platforms_dir() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir(tmp.path().join("platforms")).unwrap();
+        let got = resolve_profiles_dir(None, Some(tmp.path()), None);
+        assert_eq!(got, tmp.path().join("platforms"));
+    }
+
+    #[test]
+    fn root_wins_over_binary_location() {
+        let root = tempdir().unwrap();
+        let installed = tempdir().unwrap();
+        fs::create_dir(root.path().join("platforms")).unwrap();
+        fs::create_dir(installed.path().join("platforms")).unwrap();
+        let bin = installed.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let got = resolve_profiles_dir(None, Some(root.path()), Some(&bin));
+        assert_eq!(got, root.path().join("platforms"));
+    }
+
+    #[test]
+    fn installed_binary_finds_sibling_platforms_without_root() {
+        let tmp = tempdir().unwrap();
+        fs::create_dir(tmp.path().join("platforms")).unwrap();
+        let bin = tmp.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let got = resolve_profiles_dir(None, None, Some(&bin));
+        assert_eq!(got, bin.join("..").join("platforms"));
+        assert!(got.is_dir());
+    }
+
+    #[test]
+    fn missing_dirs_fall_back_to_source_tree_default() {
+        let tmp = tempdir().unwrap();
+        let got = resolve_profiles_dir(None, Some(tmp.path()), Some(tmp.path()));
+        assert_eq!(got, PathBuf::from("platforms"));
     }
 }
