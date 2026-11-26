@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::{
     collections::BTreeMap,
     fs,
@@ -110,20 +110,76 @@ enum RegistryCommand {
 }
 
 fn main() -> Result<()> {
+    let matches = Cli::command().get_matches();
+    let explicit = |m: &clap::ArgMatches, name| {
+        m.value_source(name) == Some(clap::parser::ValueSource::CommandLine)
+    };
+    let (_, child) = matches.subcommand().context("missing command")?;
+    let inherit = |name| explicit(&matches, name) && !explicit(child, name);
     let Cli {
         platform,
         profiles,
         root,
         registry,
         command,
-    } = Cli::parse();
+    } = Cli::from_arg_matches(&matches)?;
     match command {
-        Command::Check(args) => return cli::check(&args),
-        Command::Pack(args) => return cli::pack(&args),
-        Command::Publish(args) => return cli::publish(&args),
-        Command::Release(args) => return cli::release(&args),
-        Command::Status(args) => return cli::status(&args),
-        Command::Auth(args) => return cli::auth(&args),
+        Command::Check(mut args) => {
+            if inherit("platform") {
+                args.platform = platform;
+            }
+            if inherit("profiles") {
+                args.profiles = profiles;
+            }
+            cli::check(&args)
+        }
+        Command::Pack(mut args) => {
+            if inherit("platform") {
+                args.platform = platform;
+            }
+            if inherit("profiles") {
+                args.profiles = profiles;
+            }
+            cli::pack(&args)
+        }
+        Command::Publish(mut args) => {
+            if inherit("registry") {
+                args.registry = registry;
+            }
+            cli::publish(&args)
+        }
+        Command::Release(mut args) => {
+            if inherit("platform") {
+                args.platform = platform;
+            }
+            if inherit("profiles") {
+                args.profiles = profiles;
+            }
+            if inherit("registry") {
+                args.registry = registry;
+            }
+            cli::release(&args)
+        }
+        Command::Status(mut args) => {
+            if inherit("registry") {
+                args.registry = registry;
+            }
+            cli::status(&args)
+        }
+        Command::Auth(mut args) => {
+            if explicit(&matches, "registry")
+                && child
+                    .subcommand()
+                    .is_some_and(|(_, m)| !explicit(m, "registry"))
+            {
+                match &mut args.command {
+                    cli::AuthCommand::Login(a) => a.registry = registry,
+                    cli::AuthCommand::Status(a) => a.registry = registry,
+                    cli::AuthCommand::Logout(a) => a.registry = registry,
+                }
+            }
+            cli::auth(&args)
+        }
         command => station(platform, profiles, root, registry, command),
     }
 }
@@ -178,7 +234,7 @@ fn station(
         Command::Doctor => {
             let problems = manager.doctor()?;
             if problems.is_empty() {
-                println!("?????????????????? ?????????????? ?? ??????????????.");
+                println!("Состояние пакетов в порядке.");
             } else {
                 for problem in problems {
                     eprintln!("problem: {problem}");
@@ -196,16 +252,12 @@ fn station(
                 }
             }
         }
-        Command::Update => {
-            match update::apply()? {
-                UpdateResult::Current(version) => {
-                    println!("?????? ?????????????????????? ???????????????????? ???????????? {version}.")
-                }
-                UpdateResult::Updated(version) => {
-                    println!("?????????????????????? ???????????????????? {version}.")
-                }
+        Command::Update => match update::apply()? {
+            UpdateResult::Current(version) => {
+                println!("Уже установлена актуальная версия {version}.")
             }
-        }
+            UpdateResult::Updated(version) => println!("Установлено обновление {version}."),
+        },
         Command::Entware { command } => match command {
             EntwareCommand::Status => println!(
                 "{}",

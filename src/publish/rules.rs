@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Read,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 use walkdir::WalkDir;
 
@@ -54,7 +54,7 @@ pub struct Report {
 
 impl Report {
     pub fn ok(&self) -> bool {
-        self.violations.is_empty()
+        self.violations.is_empty() && self.notes.is_empty()
     }
 }
 
@@ -79,13 +79,6 @@ impl Checker {
             self.violations.push(Violation { code, message });
         }
     }
-
-    fn note(&mut self, note: impl Into<String>) {
-        let note = note.into();
-        if !self.notes.contains(&note) {
-            self.notes.push(note);
-        }
-    }
 }
 
 /// Read `yam.yaml` from `source_dir` and evaluate every rule that can be
@@ -103,7 +96,8 @@ pub fn check(source_dir: &Path, profiles: &Path, platform: Option<&str>) -> Resu
     check_permissions(&source, &mut checker);
 
     if resolved.is_empty() {
-        checker.note(
+        checker.push(
+            "PKG004",
             "payload checks skipped: the package only declares target `any`; pass --platform",
         );
     }
@@ -374,9 +368,11 @@ fn check_payload(
             );
             continue;
         }
-        if Path::new(destination)
-            .components()
-            .any(|component| matches!(component, Component::CurDir))
+        if destination
+            .trim_end_matches('/')
+            .split('/')
+            .any(|part| part == "." || part.is_empty())
+            || destination.ends_with("//")
         {
             checker.push(
                 "PKG005",
@@ -388,6 +384,17 @@ fn check_payload(
         }
         let expanded = expand(template, profile);
         let source_path = source_dir.join(&expanded);
+        if source_path
+            .ancestors()
+            .take_while(|p| *p != source_dir)
+            .any(|p| fs::symlink_metadata(p).is_ok_and(|m| m.is_symlink()))
+        {
+            checker.push(
+                "PKG005",
+                format!("symlink not allowed in payload source {template:?}{suffix}"),
+            );
+            continue;
+        }
         let canonical = match source_path.canonicalize() {
             Ok(path) => path,
             Err(error) => {
@@ -693,6 +700,12 @@ fn check_services(
             );
             continue;
         };
+        if !executable.starts_with("bin/") {
+            checker.push(
+                "PKG010",
+                format!("service {name:?} executable must be under bin/{suffix}"),
+            );
+        }
         if !payload.contains_key(executable) {
             checker.push(
                 "PKG010",
@@ -832,6 +845,24 @@ mod tests {
         dir
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn rejects_direct_symlinks_and_ambiguous_destinations() {
+        let dir = valid_tree();
+        let root = dir.path().join("src");
+        std::os::unix::fs::symlink("share/author.player/readme.txt", root.join("link")).unwrap();
+        for (dest, input) in [
+            ("share/author.player/readme.txt", "link"),
+            (
+                "share/author.player/./readme.txt",
+                "share/author.player/readme.txt",
+            ),
+        ] {
+            source(&root,&format!("name: author/player\nversion: 1.0.0\nlicense: MIT\ndescription: Player\ntargets: [testboard]\nfiles:\n  {dest}: {input}\n"));
+            assert!(codes(&check_dir(&dir, None)).contains(&"PKG005"));
+        }
+    }
+
     #[test]
     fn a_clean_package_passes() {
         let dir = valid_tree();
@@ -964,15 +995,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_platform_for_target_any_is_reported_as_a_note() {
+    fn missing_platform_for_target_any_fails_the_gate() {
         let dir = valid_tree();
         source(
             &dir.path().join("src"),
             "name: author/player\nversion: 1.0.0\nlicense: MIT\ndescription: Player\ntargets: [any]\nfiles:\n  share/author.player/readme.txt: share/author.player/readme.txt\n",
         );
         let report = check_dir(&dir, None);
-        assert!(report.ok());
-        assert!(!report.notes.is_empty());
+        assert!(!report.ok());
+        assert!(codes(&report).contains(&"PKG004"));
     }
 
     #[test]

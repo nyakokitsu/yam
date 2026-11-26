@@ -261,12 +261,40 @@ pub fn copy_key(source: &Path, registry: &str) -> Result<PathBuf> {
     }
     let keys = config_dir()?.join("keys");
     create_private_dir(&keys)?;
-    let destination = keys.join(format!("{registry}.pem"));
+    let destination = keys.join(format!("{registry}-{}.pem", uuid::Uuid::new_v4()));
     let bytes = fs::read(source).with_context(|| format!("read {}", source.display()))?;
-    let _ = fs::remove_file(&destination);
     write_private_file(&destination, &bytes)
         .with_context(|| format!("write {}", destination.display()))?;
     Ok(destination)
+}
+
+/// Only remove keys created by YAM, never an externally supplied path.
+pub fn remove_obsolete_key(registry: &str, entry: &StoredRegistry, store: &Store) -> Result<()> {
+    let Some(path) = entry.key_file.as_ref() else {
+        return Ok(());
+    };
+    if path.parent() != Some(config_dir()?.join("keys").as_path())
+        || store
+            .registries
+            .values()
+            .any(|e| e.key_file.as_ref() == Some(path))
+    {
+        return Ok(());
+    }
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return Ok(());
+    };
+    let managed = stem == registry
+        || stem
+            .strip_prefix(&format!("{registry}-"))
+            .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok());
+    if managed && path.extension().is_some_and(|x| x == "pem") {
+        match fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            result => result?,
+        }
+    }
+    Ok(())
 }
 
 /// `fs::rename` replaces an existing file on Unix but fails on Windows.

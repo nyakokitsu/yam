@@ -92,8 +92,8 @@ pub enum UploadOutcome {
 pub fn api_base(upload_url: &str) -> Result<String> {
     let url = reqwest::Url::parse(upload_url)
         .with_context(|| format!("invalid registry upload URL {upload_url:?}"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        bail!("registry upload URL must use http or https")
+    if url.scheme() != "https" {
+        bail!("registry upload URL must use HTTPS")
     }
     let mut base = url.clone();
     let path = base.path().trim_end_matches('/').to_string();
@@ -108,7 +108,7 @@ pub fn api_base(upload_url: &str) -> Result<String> {
 }
 
 pub fn submission_url(upload_url: &str, id: &str) -> Result<String> {
-    if id.is_empty()
+    if matches!(id, "" | "." | "..")
         || !id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
@@ -120,6 +120,7 @@ pub fn submission_url(upload_url: &str, id: &str) -> Result<String> {
 
 fn client() -> Result<Client> {
     Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(120))
         .user_agent(concat!("yam-publish/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -213,7 +214,9 @@ pub fn upload(
     if artifact.is_empty() {
         bail!("artifact is empty")
     }
-    let response = client()?
+    api_base(upload_url)?;
+    let http = client()?;
+    let request = http
         .post(upload_url)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/octet-stream")
@@ -223,17 +226,43 @@ pub fn upload(
         .header("x-yam-sha256", header(publication.sha256)?)
         .header("x-yam-author-key", header(publication.public_key)?)
         .header("x-yam-author-signature", header(publication.signature)?)
-        .body(artifact.to_vec())
-        .send()
-        .context("send artifact to registry")?;
+        .body(artifact.to_vec());
+    let mut attempt = 1;
+    let response = loop {
+        let result = request.try_clone().context("cannot replay upload")?.send();
+        let delay = match &result {
+            Ok(r)
+                if r.status().is_server_error()
+                    || r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+            {
+                r.headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(attempt)
+            }
+            Err(e) if e.is_connect() || e.is_timeout() || e.is_request() => attempt,
+            _ => break result.context("send artifact to registry")?,
+        };
+        if attempt >= 3 || delay > 30 {
+            break result.context("send artifact to registry")?;
+        }
+        std::thread::sleep(Duration::from_secs(delay));
+        attempt += 1;
+    };
     let status = response.status();
     let body = response.text().unwrap_or_default();
     if !status.is_success() {
         bail!("registry rejected publication ({status}): {}", body.trim())
     }
-    match parse_submission(&body) {
+    upload_acknowledgement(&body)
+}
+
+fn upload_acknowledgement(body: &str) -> Result<UploadOutcome> {
+    match parse_submission(body) {
         Some(submission) => Ok(UploadOutcome::Queued(submission)),
-        None => Ok(UploadOutcome::Accepted),
+        None if body.trim() == "uploaded" => Ok(UploadOutcome::Accepted),
+        None => bail!("unrecognized registry upload acknowledgement"),
     }
 }
 
@@ -267,11 +296,13 @@ pub fn status(upload_url: &str, token: &str, id: &str) -> Result<Submission, Sta
             },
         );
     }
-    parse_submission(&body).ok_or_else(|| {
-        StatusError::permanent(anyhow::anyhow!(
-            "registry returned no submission id at {url}"
-        ))
-    })
+    parse_submission(&body)
+        .filter(|s| s.id == id)
+        .ok_or_else(|| {
+            StatusError::permanent(anyhow::anyhow!(
+                "registry returned an invalid or mismatched submission at {url}"
+            ))
+        })
 }
 
 /// A status request failure. Authentication and contract errors must stop the
@@ -321,6 +352,7 @@ pub fn parse_submission(body: &str) -> Option<Submission> {
         .unwrap_or(&value);
     let id = string_at(candidate, &["id", "submission_id", "submissionId"])
         .or_else(|| string_at(&value, &["submission_id", "submissionId"]))?;
+    submission_url(DEFAULT_UPLOAD_URL, &id).ok()?;
     let moderation = candidate
         .get("moderation")
         .filter(|value| value.is_object());
@@ -328,7 +360,7 @@ pub fn parse_submission(body: &str) -> Option<Submission> {
         .and_then(|value| string_at(value, &["state", "status"]))
         .or_else(|| string_at(candidate, &["status", "state"]))
         .or_else(|| string_at(&value, &["status", "state"]))
-        .unwrap_or_else(|| "pending".into());
+        .filter(|v| !v.trim().is_empty())?;
     let reason = moderation
         .and_then(|value| string_at(value, &["reason", "message"]))
         .or_else(|| string_at(candidate, &["reason", "message"]))
@@ -488,6 +520,13 @@ mod tests {
     }
 
     #[test]
+    fn rejects_insecure_endpoints_and_incomplete_submissions() {
+        assert!(api_base("http://registry.example/api/v2/upload").is_err());
+        assert!(parse_submission(r#"{"id":"s1"}"#).is_none());
+        assert!(submission_url(DEFAULT_UPLOAD_URL, "..").is_err());
+    }
+
+    #[test]
     fn nested_and_flat_submissions_parse() {
         let nested = parse_submission(
             r#"{"submission":{"id":"s1","status":"in_review","moderation":{"reason":"checking"}}}"#,
@@ -505,7 +544,12 @@ mod tests {
 
     #[test]
     fn a_plain_text_acknowledgement_has_no_submission() {
-        assert!(parse_submission("uploaded\n").is_none());
+        assert!(matches!(
+            upload_acknowledgement("uploaded\n"),
+            Ok(UploadOutcome::Accepted)
+        ));
+        assert!(upload_acknowledgement("<html>Login</html>").is_err());
+        assert!(upload_acknowledgement("").is_err());
         assert!(parse_submission(r#"{"ok":true}"#).is_none());
     }
 

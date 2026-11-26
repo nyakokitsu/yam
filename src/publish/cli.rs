@@ -611,11 +611,7 @@ fn auth_login(args: &AuthLoginArgs) -> Result<()> {
     if !key.is_file() {
         bail!("author key is not a file: {}", key.display())
     }
-    let key_file = if args.store_key {
-        credentials::copy_key(&key, &args.registry)?
-    } else {
-        key.canonicalize().unwrap_or(key)
-    };
+    client::api_base(&upload_url)?;
     let mut login = existing.as_ref().and_then(|entry| entry.login.clone());
     if !args.no_verify {
         match client::whoami(&upload_url, &token)? {
@@ -632,6 +628,11 @@ fn auth_login(args: &AuthLoginArgs) -> Result<()> {
             ),
         }
     }
+    let key_file = if args.store_key {
+        credentials::copy_key(&key, &args.registry)?
+    } else {
+        key.canonicalize().unwrap_or(key)
+    };
     store.insert(
         &args.registry,
         credentials::StoredRegistry {
@@ -641,7 +642,15 @@ fn auth_login(args: &AuthLoginArgs) -> Result<()> {
             login: login.clone(),
         },
     );
-    store.save()?;
+    if let Err(err) = store.save() {
+        if args.store_key {
+            fs::remove_file(&key_file)?;
+        }
+        return Err(err);
+    }
+    if let Some(old) = existing {
+        credentials::remove_obsolete_key(&args.registry, &old, &store)?;
+    }
     println!(
         "Logged in to {} as {} (registry {}).",
         host_of(&upload_url),
@@ -719,15 +728,20 @@ fn auth_logout(args: &AuthLogoutArgs) -> Result<()> {
     let mut store = credentials::Store::load()?;
     if args.all {
         let count = store.registries.len();
-        store.registries.clear();
+        let removed = std::mem::take(&mut store.registries);
         store.save()?;
+        for (name, entry) in removed {
+            credentials::remove_obsolete_key(&name, &entry, &store)?;
+        }
         println!("Removed {count} stored registry credential(s).");
         return Ok(());
     }
-    if !store.remove(&args.registry) {
-        bail!("no stored credentials for registry {:?}", args.registry)
-    }
+    let entry = store
+        .registries
+        .remove(&args.registry)
+        .context("no stored credentials for registry")?;
     store.save()?;
+    credentials::remove_obsolete_key(&args.registry, &entry, &store)?;
     println!("Logged out of registry {}.", args.registry);
     Ok(())
 }
