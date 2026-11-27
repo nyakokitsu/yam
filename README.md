@@ -86,6 +86,8 @@ curl -fsSL https://hackalice.me/install.sh | sh -s -- --uninstall
 
 ## Использование
 
+
+### repo.yse.wtf временно не работает
 ```sh
 yam registry add official https://repo.yse.wtf/v2 \
   --key ed25519:5Rz8F47uftWVU5kLgWYhprkEZ4rpP2kecUge/a7KQas=
