@@ -242,7 +242,7 @@ yam auth logout --registry official
 yam check --source ../my-player
 yam release --source ../my-player --dry-run
 yam release --source ../my-player --wait
-yam status <submission-id> --watch
+yam status <submission-id> --watch  # только для реестра с очередью
 ```
 
 `release` собирает все target из `yam.yaml`, пишет архивы в
@@ -253,5 +253,5 @@ target, `--output-dir` меняет каталог, `--output` задаёт то
 Значения по умолчанию: `--registry official`, upload endpoint
 `https://repo.yse.wtf/api/v2/upload`. Токен и ключ берутся из флагов, затем
 из `YAM_PUBLISH_TOKEN` / `YAM_AUTHOR_KEY_FILE`, затем из `auth login`.
-`status --watch` печатает переходы модерации; `--json` — по объекту на
+В yamreg версия публикуется сразу, без заявки. В реестрах с очередью `status --watch` печатает переходы модерации; `--json` — по объекту на
 переход; `--interval` и `--timeout` управляют опросом.

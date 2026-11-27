@@ -1,12 +1,5 @@
-//! Registry publishing API.
-//!
-//! The contract is documented in `docs/REGISTRY-API.md`. Two shapes are
-//! deliberately accepted:
-//!
-//! * a registry that reports moderation returns a `submission` object;
-//! * today's registry returns a short plain-text acknowledgement. Publishing
-//!   must keep working, so a missing submission id is not an error — it only
-//!   means `status` and `--wait` have nothing to follow.
+//! Registry publishing API: yamreg returns an artifact receipt; registries
+//! with a moderation extension can return a submission instead.
 
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
@@ -231,18 +224,19 @@ pub fn upload(
     let response = loop {
         let result = request.try_clone().context("cannot replay upload")?.send();
         let delay = match &result {
-            Ok(r)
-                if r.status().is_server_error()
-                    || r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS =>
-            {
-                r.headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(attempt)
+            Ok(r) if r.status() == reqwest::StatusCode::TOO_MANY_REQUESTS => r
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(attempt),
+            Err(e) if e.is_connect() => attempt,
+            Err(_) => {
+                break result.context(
+                    "upload result unknown; check the signed package index before retrying",
+                )?
             }
-            Err(e) if e.is_connect() || e.is_timeout() || e.is_request() => attempt,
-            _ => break result.context("send artifact to registry")?,
+            Ok(_) => break result?,
         };
         if attempt >= 3 || delay > 30 {
             break result.context("send artifact to registry")?;
@@ -251,19 +245,41 @@ pub fn upload(
         attempt += 1;
     };
     let status = response.status();
-    let body = response.text().unwrap_or_default();
+    let body = response
+        .text()
+        .context("read upload response; check the signed package index before retrying")?;
+    if status.is_server_error() {
+        bail!(
+            "upload result unknown ({status}); check the signed package index before retrying: {}",
+            body.trim()
+        )
+    }
     if !status.is_success() {
         bail!("registry rejected publication ({status}): {}", body.trim())
     }
-    upload_acknowledgement(&body)
+    upload_acknowledgement(&body, publication)
 }
 
-fn upload_acknowledgement(body: &str) -> Result<UploadOutcome> {
-    match parse_submission(body) {
-        Some(submission) => Ok(UploadOutcome::Queued(submission)),
-        None if body.trim() == "uploaded" => Ok(UploadOutcome::Accepted),
-        None => bail!("unrecognized registry upload acknowledgement"),
+fn upload_acknowledgement(body: &str, publication: &Publication<'_>) -> Result<UploadOutcome> {
+    if let Some(submission) = parse_submission(body) {
+        return Ok(UploadOutcome::Queued(submission));
     }
+    if body.trim() == "uploaded" {
+        return Ok(UploadOutcome::Accepted);
+    }
+    let receipt: Value =
+        serde_json::from_str(body).context("unrecognized registry upload acknowledgement")?;
+    for (field, expected) in [
+        ("name", publication.name),
+        ("version", publication.version),
+        ("target", publication.target),
+        ("sha256", publication.sha256),
+    ] {
+        if receipt.get(field).and_then(Value::as_str) != Some(expected) {
+            bail!("registry upload receipt does not match {field}")
+        }
+    }
+    Ok(UploadOutcome::Accepted)
 }
 
 /// Fetch the current moderation state of a submission.
@@ -543,13 +559,33 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_text_acknowledgement_has_no_submission() {
+    fn upload_receipt_must_match_the_sent_artifact() {
+        let p = Publication {
+            name: "demo/player",
+            version: "1.0.0",
+            target: "any",
+            sha256: "ab",
+            public_key: "",
+            signature: "",
+        };
+        let receipt = serde_json::json!({"name":p.name,"version":p.version,"target":p.target,"sha256":p.sha256});
         assert!(matches!(
-            upload_acknowledgement("uploaded\n"),
+            upload_acknowledgement(&receipt.to_string(), &p),
             Ok(UploadOutcome::Accepted)
         ));
-        assert!(upload_acknowledgement("<html>Login</html>").is_err());
-        assert!(upload_acknowledgement("").is_err());
+        for field in ["name", "version", "target", "sha256"] {
+            let mut bad = receipt.clone();
+            bad[field] = Value::String("unexpected".into());
+            assert!(upload_acknowledgement(&bad.to_string(), &p).is_err());
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(upload_acknowledgement(&bad.to_string(), &p).is_err());
+        }
+        assert!(matches!(
+            upload_acknowledgement("uploaded\n", &p),
+            Ok(UploadOutcome::Accepted)
+        ));
+        assert!(upload_acknowledgement("<html>Login</html>", &p).is_err());
+        assert!(upload_acknowledgement("", &p).is_err());
         assert!(parse_submission(r#"{"ok":true}"#).is_none());
     }
 

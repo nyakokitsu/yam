@@ -305,6 +305,10 @@ pub fn publish(args: &PublishArgs) -> Result<()> {
             }
         }
         None => {
+            println!(
+                "Published {} {} for {}.",
+                manifest.name, manifest.version, args.target
+            );
             if args.wait {
                 eprintln!(
                     "note: this registry does not report moderation submissions; nothing to wait for"

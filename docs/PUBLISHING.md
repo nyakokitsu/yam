@@ -24,7 +24,7 @@ cargo build --release --locked --bin yam-publish
 не устанавливается на колонку.
 
 Перед сборкой полезно прогнать проверку правил публикации: она не пишет архив
-и перечисляет всё, что реестр отклонит.
+и показывает локально обнаруженные нарушения. Проверки реестра выполняются при загрузке.
 
 ```sh
 yam-publish check --source ../my-player
@@ -192,21 +192,11 @@ yam-publish publish ... --upload-url https://registry.example/api/v2/upload
 Это **не** client URL `/v2`, который пользователи добавляют через `yam registry
 add`; upload endpoint выдаёт registry.
 
-## 5. Дождитесь модерации и проверьте публикацию
+## 5. Проверьте публикацию
 
-Загрузка не делает версию видимой сразу: новая версия попадает в очередь
-модерации. `publish` печатает `submission id`; следить за ним можно так:
+`yamreg` публикует версию сразу. Сервер возвращает квитанцию с именем, версией, target и SHA-256; клиент сверяет их с отправленным архивом. `--wait` в этом случае не запускает опрос. Только реестры с расширением модерации возвращают `submission id` для `yam-publish status <id> --watch`.
 
-```sh
-yam-publish status sub_01JABCDEF --watch
-yam-publish status sub_01JABCDEF --watch --json   # по строке JSON на переход
-```
-
-`pending → in_review → approved | rejected`; при отказе печатается причина.
-Тот же режим доступен сразу при публикации: `release ... --wait`.
-
-После `approved` (или `published`) дождитесь обновления каталога, затем на
-чистом YAM root выполните:
+Проверьте пакет на чистом YAM root:
 
 ```sh
 yam search player

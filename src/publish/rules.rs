@@ -161,6 +161,11 @@ pub fn verify_artifact(path: &Path) -> Result<()> {
 fn check_identity(source: &PackageSource, checker: &mut Checker) {
     if let Err(error) = validate_name(&source.name) {
         checker.push("PKG001", format!("name: {error}"));
+    } else if source.name.split('/').any(|part| part.len() > 63) {
+        checker.push(
+            "PKG001",
+            "registry name components must be at most 63 bytes",
+        );
     }
     if let Err(error) = validate_version(&source.version) {
         checker.push("PKG002", format!("version: {error}"));
@@ -872,6 +877,23 @@ mod tests {
         );
         let report = check_dir(&dir, None);
         assert!(report.ok(), "{:?}", report.violations);
+    }
+
+    #[test]
+    fn registry_name_components_are_limited_to_63_bytes() {
+        let dir = valid_tree();
+        for length in [63, 64] {
+            for name in [
+                format!("{}/player", "a".repeat(length)),
+                format!("author/{}", "a".repeat(length)),
+            ] {
+                source(&dir.path().join("src"), &format!("name: {name}\nversion: 1.0.0\nlicense: MIT\ndescription: Player\ntargets: [testboard]\nfiles: {{}}\n"));
+                assert_eq!(
+                    codes(&check_dir(&dir, None)).contains(&"PKG001"),
+                    length == 64
+                );
+            }
+        }
     }
 
     #[test]
