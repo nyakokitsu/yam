@@ -1,11 +1,12 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
+use yam::publish::cli;
 use yam::v2::registry;
 use yam::v2::update::{self, UpdateResult};
 use yam::v2::{Manager, PlatformProfile};
@@ -13,9 +14,10 @@ use yam::v2::{Manager, PlatformProfile};
 #[derive(Parser)]
 #[command(name = "yam", about = "Y Application Manager")]
 struct Cli {
-    /// Platform profile ID, such as yandexmicro.
+    /// Platform profile ID, such as yandexmicro. Required for station
+    /// commands; publishing and auth commands run on a PC without it.
     #[arg(long, env = "YAM_PLATFORM")]
-    platform: String,
+    platform: Option<String>,
     /// Directory containing platform YAML profiles. Defaults to
     /// `<root>/platforms`, `<yam binary dir>/../platforms`, then `./platforms`.
     #[arg(long, env = "YAM_PROFILES")]
@@ -72,6 +74,18 @@ enum Command {
     Plan {
         package: String,
     },
+    /// Check publication rules of a package source directory (PC).
+    Check(cli::CheckArgs),
+    /// Build a .yampkg for one platform (PC).
+    Pack(cli::PackArgs),
+    /// Sign and upload an already-built .yampkg (PC).
+    Publish(cli::PublishArgs),
+    /// Build every declared target and publish the artifacts (PC).
+    Release(cli::ReleaseArgs),
+    /// Show the moderation state of a published artifact (PC).
+    Status(cli::StatusArgs),
+    /// Store or inspect registry credentials (PC).
+    Auth(cli::AuthArgs),
 }
 #[derive(Subcommand)]
 enum EntwareCommand {
@@ -120,21 +134,108 @@ fn resolve_profiles_dir(
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    let profiles = resolve_profiles_dir(cli.profiles, cli.root.as_deref(), exe_dir.as_deref());
-    let profile = PlatformProfile::load(&profiles, &cli.platform)?;
-    let root = cli.root.unwrap_or_else(|| profile.paths.root.clone());
+    let matches = Cli::command().get_matches();
+    let explicit = |m: &clap::ArgMatches, name| {
+        m.value_source(name) == Some(clap::parser::ValueSource::CommandLine)
+    };
+    let (_, child) = matches.subcommand().context("missing command")?;
+    let inherit = |name| explicit(&matches, name) && !explicit(child, name);
+    let Cli {
+        platform,
+        profiles,
+        root,
+        registry,
+        command,
+    } = Cli::from_arg_matches(&matches)?;
+    let exe = std::env::current_exe().ok();
+    let profiles = resolve_profiles_dir(
+        profiles,
+        root.as_deref(),
+        exe.as_deref().and_then(Path::parent),
+    );
+    match command {
+        Command::Check(mut args) => {
+            if inherit("platform") {
+                args.platform = platform;
+            }
+            if !explicit(child, "profiles") {
+                args.profiles = profiles;
+            }
+            cli::check(&args)
+        }
+        Command::Pack(mut args) => {
+            if inherit("platform") {
+                args.platform = platform;
+            }
+            if !explicit(child, "profiles") {
+                args.profiles = profiles;
+            }
+            cli::pack(&args)
+        }
+        Command::Publish(mut args) => {
+            if inherit("registry") {
+                args.registry = registry;
+            }
+            cli::publish(&args)
+        }
+        Command::Release(mut args) => {
+            if inherit("platform") {
+                args.platform = platform;
+            }
+            if !explicit(child, "profiles") {
+                args.profiles = profiles;
+            }
+            if inherit("registry") {
+                args.registry = registry;
+            }
+            cli::release(&args)
+        }
+        Command::Status(mut args) => {
+            if inherit("registry") {
+                args.registry = registry;
+            }
+            cli::status(&args)
+        }
+        Command::Auth(mut args) => {
+            if explicit(&matches, "registry")
+                && child
+                    .subcommand()
+                    .is_some_and(|(_, m)| !explicit(m, "registry"))
+            {
+                match &mut args.command {
+                    cli::AuthCommand::Login(a) => a.registry = registry,
+                    cli::AuthCommand::Status(a) => a.registry = registry,
+                    cli::AuthCommand::Logout(a) => a.registry = registry,
+                }
+            }
+            cli::auth(&args)
+        }
+        command => station(platform, profiles, root, registry, command),
+    }
+}
+
+/// Commands that need an installed station profile. Parsing stays global so
+/// `yam --platform X install` keeps working, but the profile is loaded only
+/// here: a desktop `yam` must not require a station to publish a package.
+fn station(
+    platform: Option<String>,
+    profiles: PathBuf,
+    root: Option<PathBuf>,
+    registry_name: String,
+    command: Command,
+) -> Result<()> {
+    let platform =
+        platform.context("--platform (or YAM_PLATFORM) is required for station commands")?;
+    let profile = PlatformProfile::load(&profiles, &platform)?;
+    let root = root.unwrap_or_else(|| profile.paths.root.clone());
     let mut manager = Manager::open(root, profile)?;
-    match cli.command {
+    match command {
         Command::Install { package, yes } => {
             let manifest = if Path::new(&package).is_file() {
                 manager.install(Path::new(&package), yes)?
             } else {
                 let (name, version) = split_package_version(&package)?;
-                let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+                let selected = registry::registry(&manager_root(&manager), &registry_name)?;
                 install_registry_graph(&mut manager, &selected, name, version, yes)?
             };
             println!(
@@ -231,7 +332,7 @@ fn main() -> Result<()> {
             }
         },
         Command::Search { query } => {
-            let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+            let selected = registry::registry(&manager_root(&manager), &registry_name)?;
             for package in registry::catalogue(&selected)?
                 .packages
                 .into_iter()
@@ -248,7 +349,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Info { name } => {
-            let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+            let selected = registry::registry(&manager_root(&manager), &registry_name)?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&registry::package_index(&selected, &name)?)?
@@ -256,7 +357,7 @@ fn main() -> Result<()> {
         }
         Command::Plan { package } => {
             let (name, version) = split_package_version(&package)?;
-            let selected = registry::registry(&manager_root(&manager), &cli.registry)?;
+            let selected = registry::registry(&manager_root(&manager), &registry_name)?;
             let installed = manager.installed_snapshot()?;
             let mut source = registry::LiveSource::new(&selected);
             let packages =
@@ -267,6 +368,14 @@ fn main() -> Result<()> {
                     package.name, package.version, package.artifact.url
                 );
             }
+        }
+        Command::Check(_)
+        | Command::Pack(_)
+        | Command::Publish(_)
+        | Command::Release(_)
+        | Command::Status(_)
+        | Command::Auth(_) => {
+            unreachable!("publishing commands are dispatched before station setup")
         }
     }
     Ok(())
@@ -364,8 +473,21 @@ fn split_package_version(value: &str) -> Result<(&str, Option<&str>)> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_profiles_dir;
-    use std::{fs, path::PathBuf};
+    use super::*;
+
+    #[test]
+    fn publishing_commands_parse_without_a_platform() {
+        let cli = Cli::try_parse_from(["yam", "auth", "status"]).unwrap();
+        assert!(cli.platform.is_none());
+        assert!(matches!(cli.command, Command::Auth(_)));
+    }
+
+    #[test]
+    fn station_commands_still_accept_the_platform_flag() {
+        let cli = Cli::try_parse_from(["yam", "--platform", "yandexmicro", "list"]).unwrap();
+        assert_eq!(cli.platform.as_deref(), Some("yandexmicro"));
+        assert!(matches!(cli.command, Command::List));
+    }
     use tempfile::tempdir;
 
     #[test]

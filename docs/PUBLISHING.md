@@ -23,6 +23,17 @@ cargo build --release --locked --bin yam-publish
 `yam-publish` — PC-инструмент. Он создаёт `.yampkg`, подписывает публикацию и
 не устанавливается на колонку.
 
+Перед сборкой полезно прогнать проверку правил публикации: она не пишет архив
+и показывает локально обнаруженные нарушения. Проверки реестра выполняются при загрузке.
+
+```sh
+yam-publish check --source ../my-player
+```
+
+Полный список правил и кодов ошибок — в [PUBLISHING-RULES.md](PUBLISHING-RULES.md).
+Те же проверки выполняются автоматически в `pack` и `release`; `publish`
+загружает уже собранный архив и на них не полагается.
+
 ## 1. Создайте namespace и token
 
 1. Откройте [repo.yse.wtf](https://repo.yse.wtf/), войдите через GitHub.
@@ -39,6 +50,17 @@ cargo build --release --locked --bin yam-publish
 chmod 600 ~/Keys/yam-author-private-key.pem
 export YAM_AUTHOR_KEY_FILE="$HOME/Keys/yam-author-private-key.pem"
 export YAM_PUBLISH_TOKEN='вставьте-токен-сюда'
+```
+
+Либо сохраните оба значения один раз в конфиг пользователя (файл создаётся с
+правами `0600`; `--store-key` копирует PEM в каталог конфигурации):
+
+```sh
+yam auth login --registry official \
+  --token "$YAM_PUBLISH_TOKEN" \
+  --key ~/Keys/yam-author-private-key.pem \
+  --store-key
+yam auth status --registry official
 ```
 
 Для CI поместите оба значения в секреты CI. Никогда не печатайте token в логе.
@@ -88,6 +110,12 @@ cargo build --release --target aarch64-unknown-linux-musl
 `./platforms`, если не задан `--profiles`.
 
 ```sh
+yam-publish check --source ../my-player
+```
+
+Затем соберите и проверьте установку в отдельном корне:
+
+```sh
 ./target/release/yam-publish pack \
   --profiles platforms \
   --source ../my-player \
@@ -103,24 +131,38 @@ cargo build --release --target aarch64-unknown-linux-musl
 
 ## 4. Сборка и публикация одной командой
 
-В репозитории YAM есть PC-инструмент `yam-publish`. Он:
-
-1. создаёт `.yampkg` из `yam.yaml`;
-2. читает имя и версию из `yam.yaml`;
-3. считает SHA-256 архива;
-4. подписывает `(name, version, target, sha256)` вашим Ed25519 key;
-5. отправляет архив и metadata в registry по HTTPS.
-
-Пример для исходников `../my-player`:
+`release` собирает **каждый** target из `yam.yaml`, подписывает и загружает
+артефакты. Указывать output и target вручную не нужно; токен и ключ берутся из
+`auth login` или переменных окружения:
 
 ```sh
-./target/release/yam-publish release \
-  --source ../my-player \
-  --profiles platforms \
-  --output ../my-player/dist/player-yandexmini_2.yampkg \
-  --token "$YAM_PUBLISH_TOKEN" \
-  --key "$YAM_AUTHOR_KEY_FILE"
+yam release --source ../my-player
 ```
+
+Тот же сценарий доступен через PC-инструмент `yam-publish release` (флаги
+совпадают).
+
+Для `../my-player` с `targets: [yandexmini_2]` появится
+`dist/player-1.0.0-yandexmini_2.yampkg`, и он сразу уйдёт в реестр. Если
+targets несколько, будет собрано и загружено по артефакту на каждый.
+
+Проверить сборку без загрузки (token и ключ не нужны):
+
+```sh
+yam-publish release --source ../my-player --dry-run
+```
+
+Параметры:
+
+| Флаг | Назначение |
+| --- | --- |
+| `--source <каталог>` | Исходники с `yam.yaml`; по умолчанию `.` |
+| `--platform <id>` | Собрать только один target вместо всех |
+| `--output-dir <каталог>` | Куда писать архивы; по умолчанию `<source>/dist` |
+| `-o, --output <файл>` | Точный путь архива; только для одного target |
+| `--dry-run` | Собрать и проверить, не загружать |
+| `--wait` | Дождаться решения модерации по каждой заявке |
+| `--profiles <каталог>` | Профили платформ; по умолчанию `platforms` |
 
 Или используйте готовый shell-пример:
 
@@ -131,12 +173,14 @@ YAM_AUTHOR_KEY_FILE="$HOME/Keys/yam-author-private-key.pem" \
   ../my-player/dist/player-yandexmini_2.yampkg
 ```
 
-Параметры инструмента:
+Нижнеуровневые команды остаются для CI и отладки:
 
 ```text
+yam-publish check    # проверить правила публикации, ничего не собирая
 yam-publish pack     # только создать .yampkg
 yam-publish publish  # подписать и отправить существующий .yampkg
-yam-publish release  # pack + publish
+yam-publish release  # check + pack всех target + publish
+yam-publish status   # состояние заявки, --watch для живого слежения
 ```
 
 Для другого сервера публикации укажите endpoint явно:
@@ -148,10 +192,11 @@ yam-publish publish ... --upload-url https://registry.example/api/v2/upload
 Это **не** client URL `/v2`, который пользователи добавляют через `yam registry
 add`; upload endpoint выдаёт registry.
 
-## 5. Проверьте публикацию как пользователь
+## 5. Проверьте публикацию
 
-После успешного ответа registry дождитесь обновления каталога, затем на чистом
-YAM root выполните:
+`yamreg` публикует версию сразу. Сервер возвращает квитанцию с именем, версией, target и SHA-256; клиент сверяет их с отправленным архивом. `--wait` в этом случае не запускает опрос. Только реестры с расширением модерации возвращают `submission id` для `yam-publish status <id> --watch`.
+
+Проверьте пакет на чистом YAM root:
 
 ```sh
 yam search player
@@ -159,6 +204,10 @@ yam plan alice/player
 yam install alice/player
 yam list
 ```
+
+Контракт endpoint'ов модерации — в [REGISTRY-API.md](REGISTRY-API.md).
+Старые реестры без модерации могут ответить текстом `uploaded` без `submission id`; клиент считает
+артефакт опубликованным и предупреждает, что следить не за чем.
 
 Опубликованная комбинация имени, версии и target неизменяема. Если нашли ошибку,
 увеличьте SemVer-версию, пересоберите и выпустите новый artifact — не

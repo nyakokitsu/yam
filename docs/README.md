@@ -12,8 +12,11 @@ YAM — менеджер пакетов для Яндекс Станций. Об
 
 ## Авторам пакетов
 
-- [Упаковка](PACKAGING.md) — `yam.yaml`, формат `.yampkg`, `yam-publish pack`.
-- [Публикация](PUBLISHING.md) — namespace, подпись и загрузка пакетов через `yam-publish`.
+- [Упаковка](PACKAGING.md) — `yam.yaml`, формат `.yampkg`, `yam pack` / `yam-publish pack`.
+- [Правила публикации](PUBLISHING-RULES.md) — что проверяется до загрузки и
+  что обязан проверить реестр.
+- [Публикация](PUBLISHING.md) — namespace, подпись и загрузка пакетов через `yam` / `yam-publish`.
+- [API реестра](REGISTRY-API.md) — публикация, модерация и авторизация.
 - [Реестр](REGISTRY.md) — формат и подпись реестра, публикация пакетов.
 
 ## Связанные проекты и разработка

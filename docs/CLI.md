@@ -11,13 +11,15 @@ yam [ГЛОБАЛЬНЫЕ ФЛАГИ] <команда> [аргументы]
 
 | Флаг | Переменная | По умолчанию | Назначение |
 | --- | --- | --- | --- |
-| `--platform <id>` | `YAM_PLATFORM` | — (обязателен) | ID профиля платформы, например `yandexmicro`. См. [PLATFORMS.md](PLATFORMS.md). |
+| `--platform <id>` | `YAM_PLATFORM` | — (обязателен для станционных команд) | ID профиля платформы, например `yandexmicro`. См. [PLATFORMS.md](PLATFORMS.md). |
 | `--profiles <каталог>` | `YAM_PROFILES` | первый существующий из `<root>/platforms`, `<каталог бинарника>/../platforms`, `./platforms` | Каталог с YAML-профилями (`<id>.yaml`). `<root>` - значение `--root`/`YAM_ROOT`. Явный флаг или переменная всегда приоритетнее; относительный путь задаётся от текущего каталога. |
 | `--root <каталог>` | `YAM_ROOT` | `paths.root` из профиля | Корень YAM целиком: пакеты, база, настройки реестров и кэш загрузок. Например, для проверки без колонки. |
 | `--registry <имя>` | — | `official` | Реестр для `install <имя>`, `search`, `info`, `plan`. |
 
-`--platform` обязателен для всех команд, включая `update` и `registry`:
-профиль загружается до разбора команды.
+`--platform` обязателен для станционных команд, включая `update` и `registry`.
+Профиль загружается только после разбора команды, поэтому на ПК `yam auth`,
+`yam check`, `yam pack`, `yam publish`, `yam release` и `yam status` работают
+без `--platform` и без установленного YAM root.
 
 На колонках установщик кладёт обёртку `$YAM_ROOT/bin/yam-run` (по умолчанию
 `/data/yam/bin/yam-run`), которая экспортирует `YAM_PLATFORM`,
@@ -33,7 +35,7 @@ yam update
 
 ## Пакеты
 
-Пакеты `.yampkg` собирает PC-инструмент `yam-publish pack`, а не `yam`; см.
+Пакеты `.yampkg` собирает PC-часть CLI: `yam pack` / `yam-publish pack`; см.
 [PACKAGING.md](PACKAGING.md) и [PUBLISHING.md](PUBLISHING.md). Эксклюзивный
 `flock` на `$YAM_RUN/yam.lock` берут только `install`, `remove` и `repair`;
 остальные команды открывают базу без блокировки.
@@ -207,3 +209,49 @@ yam registry add official https://example.org/registry --key ed25519:BASE64KEY
 скачивает архивы пакетов и ничего не устанавливает; как и другие команды, при
 первом запуске создаёт каталоги YAM и `db/state.sqlite3`.
 Вывод: `имя<TAB>версия<TAB>url артефакта` на каждый пакет графа.
+
+## Публикация с ПК
+
+Эти команды не требуют `--platform` и работают как в десктопной сборке `yam`,
+так и в `yam-publish` (набор и флаги совпадают). Подробный сценарий — в
+[PUBLISHING.md](PUBLISHING.md), правила — в
+[PUBLISHING-RULES.md](PUBLISHING-RULES.md), контракт реестра — в
+[REGISTRY-API.md](REGISTRY-API.md).
+
+### `auth login|status|logout`
+
+`auth login` сохраняет publish-токен и путь к Ed25519-ключу в
+`$YAM_CONFIG_DIR/credentials.json` (Windows: `%APPDATA%\yam`,
+Unix: `$XDG_CONFIG_HOME/yam` или `~/.config/yam`). Файл пишется с правами
+`0600`. `--store-key` копирует PEM в каталог конфигурации.
+
+```sh
+yam auth login --registry official --token "$YAM_PUBLISH_TOKEN" \
+  --key ~/Keys/yam-author-private-key.pem --store-key
+yam auth status --registry official          # отпечаток токена, не сам токен
+yam auth status --verify --json              # проверить через /api/v2/whoami
+yam auth logout --registry official
+```
+
+Токен можно не передавать: `auth login` прочитает его из stdin, если это
+терминал. В CI используйте `YAM_PUBLISH_TOKEN`.
+
+### `check <каталог>` / `pack` / `publish` / `release` / `status`
+
+```sh
+yam check --source ../my-player
+yam release --source ../my-player --dry-run
+yam release --source ../my-player --wait
+yam status <submission-id> --watch  # только для реестра с очередью
+```
+
+`release` собирает все target из `yam.yaml`, пишет архивы в
+`<source>/dist` и загружает их. `--platform` ограничивает сборку одним
+target, `--output-dir` меняет каталог, `--output` задаёт точный путь (только
+для одного target), `--dry-run` не требует токена и ключа.
+
+Значения по умолчанию: `--registry official`, upload endpoint
+`https://repo.yse.wtf/api/v2/upload`. Токен и ключ берутся из флагов, затем
+из `YAM_PUBLISH_TOKEN` / `YAM_AUTHOR_KEY_FILE`, затем из `auth login`.
+В yamreg версия публикуется сразу, без заявки. В реестрах с очередью `status --watch` печатает переходы модерации; `--json` — по объекту на
+переход; `--interval` и `--timeout` управляют опросом.

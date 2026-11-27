@@ -33,14 +33,27 @@ irm https://hackalice.me/install.ps1 | iex
 irm https://raw.githubusercontent.com/nyakokitsu/yam/main/install.ps1 | iex
 ```
 
-Установщик подключается к колонке через ADB. Публикуются Linux ARM binaries
-для `aarch64-unknown-linux-musl` и `armv7-unknown-linux-musleabihf`;
-десктопных сборок нет. Платформа определяется по модели и Device Tree. При
-необходимости её можно задать явно:
+Установщик подключается к колонке через ADB. Для станций публикуются Linux ARM
+binaries `aarch64-unknown-linux-musl` и `armv7-unknown-linux-musleabihf`;
+платформа определяется по модели и Device Tree. При необходимости её можно
+задать явно:
 
 ```sh
 curl -fsSL https://hackalice.me/install.sh | sh -s -- --platform yandexmini_2
 ```
+
+В тех же GitHub Releases лежат десктопные сборки `yam` для ПК:
+
+| Платформа | Ассет |
+| --- | --- |
+| Linux x86_64 | `yam-x86_64-unknown-linux-musl` |
+| Windows x64 | `yam-x86_64-pc-windows-msvc.exe` |
+| macOS ARM64 | `yam-aarch64-apple-darwin` |
+
+На ПК `yam` не требует `--platform` для `check`, `pack`, `publish`,
+`release`, `status` и `auth`. Станционные команды (`install`, `remove`,
+`list`, `update`, …) по-прежнему требуют профиль платформы. `yam-publish`
+остаётся совместимым алиасом тех же команд публикации.
 
 Параметры установщика:
 
@@ -112,12 +125,38 @@ yam install yam/luna
 yam --platform yandexmicro --root ./yam-root install --yes package.yampkg
 ```
 
+## Публикация пакета с ПК
+
+Сначала один раз сохраните токен и ключ namespace в конфиг пользователя:
+
+```sh
+yam auth login --registry official \
+  --token "$YAM_PUBLISH_TOKEN" \
+  --key "$HOME/Keys/yam-author-private-key.pem" \
+  --store-key
+```
+
+`auth status` показывает реестр, отпечаток токена и наличие ключа, не печатая
+сам токен. Дальше публикация — одна команда: собираются все target из
+`yam.yaml`, архивы подписываются и уходят в реестр, yamreg публикует их сразу. `--wait` следит за модерацией только в реестрах с очередью.
+
+```sh
+yam release --source ../my-player --wait
+yam status <submission-id> --watch  # только для реестра с очередью
+```
+
+`--dry-run` собирает и проверяет пакеты без загрузки. Подробности —
+[PUBLISHING.md](docs/PUBLISHING.md), правила — [PUBLISHING-RULES.md](docs/PUBLISHING-RULES.md),
+контракт реестра — [REGISTRY-API.md](docs/REGISTRY-API.md).
+
 ## Документация
 
 - [Каталог документации](docs/README.md)
 - [Командная строка](docs/CLI.md)
 - [Упаковка](docs/PACKAGING.md)
+- [Правила публикации](docs/PUBLISHING-RULES.md)
 - [Реестр](docs/REGISTRY.md)
+- [API реестра](docs/REGISTRY-API.md)
 - [Платформы](docs/PLATFORMS.md)
 - [Быстрый старт](docs/QUICKSTART.md)
 - [Сборка и публикация](docs/PUBLISHING.md)
